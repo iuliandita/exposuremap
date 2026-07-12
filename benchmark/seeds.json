@@ -1,0 +1,121 @@
+{
+  "schema_version": 1,
+  "observed_at": "2026-07-12",
+  "repositories": [
+    {
+      "repository": "https://github.com/immich-app/immich",
+      "default_branch": "main",
+      "candidate_paths": [
+        "docker/docker-compose.yml",
+        "docker/docker-compose.prod.yml",
+        "server/Dockerfile"
+      ],
+      "role": "complex application"
+    },
+    {
+      "repository": "https://github.com/nextcloud/all-in-one",
+      "default_branch": "main",
+      "candidate_paths": [
+        "compose.yaml",
+        "Containers/apache/Caddyfile",
+        "Containers/mastercontainer/Dockerfile"
+      ],
+      "role": "ports, Docker socket, and Caddy"
+    },
+    {
+      "repository": "https://github.com/supabase/supabase",
+      "default_branch": "master",
+      "candidate_paths": [
+        "docker/docker-compose.yml",
+        "docker/docker-compose.caddy.yml",
+        "docker/docker-compose.nginx.yml",
+        "docker/volumes/proxy/caddy/Caddyfile"
+      ],
+      "role": "large service graph and proxy variants"
+    },
+    {
+      "repository": "https://github.com/paperless-ngx/paperless-ngx",
+      "default_branch": "dev",
+      "candidate_paths": [
+        "docker/compose/docker-compose.postgres.yml",
+        "docker/compose/docker-compose.mariadb.yml",
+        "docker/compose/test-nginx.conf"
+      ],
+      "role": "Compose variants"
+    },
+    {
+      "repository": "https://github.com/mailcow/mailcow-dockerized",
+      "default_branch": "master",
+      "candidate_paths": [
+        "docker-compose.yml",
+        "data/Dockerfiles/nginx/Dockerfile"
+      ],
+      "role": "large network and binding graph"
+    },
+    {
+      "repository": "https://github.com/photoprism/photoprism",
+      "default_branch": "develop",
+      "candidate_paths": [
+        "compose.yaml",
+        "compose.nvidia.yaml",
+        "docker/demo/traefik.yaml"
+      ],
+      "role": "Compose variants and Traefik"
+    },
+    {
+      "repository": "https://github.com/outline/outline",
+      "default_branch": "main",
+      "candidate_paths": [
+        "docker-compose.yml",
+        "Dockerfile"
+      ],
+      "role": "typical application stack"
+    },
+    {
+      "repository": "https://github.com/wg-easy/wg-easy",
+      "default_branch": "master",
+      "candidate_paths": [
+        "docker-compose.yml",
+        "Dockerfile"
+      ],
+      "role": "network-sensitive service"
+    },
+    {
+      "repository": "https://github.com/Stirling-Tools/Stirling-PDF",
+      "default_branch": "main",
+      "candidate_paths": [
+        "docker/compose/docker-compose.yml",
+        "docker/frontend/nginx.conf",
+        "docker/backend/Dockerfile"
+      ],
+      "role": "Compose, nginx, and Dockerfiles"
+    },
+    {
+      "repository": "https://github.com/linkwarden/linkwarden",
+      "default_branch": "main",
+      "candidate_paths": [
+        "docker-compose.yml",
+        "Dockerfile"
+      ],
+      "role": "typical application stack"
+    },
+    {
+      "repository": "https://github.com/umami-software/umami",
+      "default_branch": "master",
+      "candidate_paths": [
+        "docker-compose.yml",
+        "Dockerfile"
+      ],
+      "role": "small application stack"
+    },
+    {
+      "repository": "https://github.com/RocketChat/Docker.Official.Image",
+      "default_branch": "main",
+      "candidate_paths": [
+        "compose.yml",
+        "traefik.yml"
+      ],
+      "role": "Compose and Traefik"
+    }
+  ]
+}
