@@ -50,6 +50,17 @@ func TestScoreRequiresIndependentReviewerIdentities(t *testing.T) {
 	}
 }
 
+func TestScoreRequiresEngineAndRulePackVersions(t *testing.T) {
+	corpus, results, assessments := exactGateFixture()
+	results[0].EngineVersion = ""
+	results[1].RulePackVersion = ""
+
+	_, err := review.Score(corpus, results, assessments)
+	if err == nil || !strings.Contains(err.Error(), "engine and rule-pack versions") {
+		t.Fatalf("Score() error = %v, want version requirement", err)
+	}
+}
+
 func TestScoreRequiresAdjudicationOnDisagreement(t *testing.T) {
 	corpus, results, assessments := exactGateFixture()
 	for index := range assessments {
@@ -61,6 +72,20 @@ func TestScoreRequiresAdjudicationOnDisagreement(t *testing.T) {
 	_, err := review.Score(corpus, results, assessments)
 	if err == nil || !strings.Contains(err.Error(), "case-01 requires adjudication") {
 		t.Fatalf("Score() error = %v, want adjudication requirement", err)
+	}
+}
+
+func TestScoreRequiresAdjudicationOnUnsupportedClaimDisagreement(t *testing.T) {
+	corpus, results, assessments := exactGateFixture()
+	for index := range assessments {
+		if assessments[index].CaseID == "case-01" && assessments[index].Role == review.RoleSecondary {
+			assessments[index].UnsupportedClaims = []string{"claims Internet reachability without context"}
+		}
+	}
+
+	_, err := review.Score(corpus, results, assessments)
+	if err == nil || !strings.Contains(err.Error(), "case-01 requires adjudication") {
+		t.Fatalf("Score() error = %v, want unsupported-claim adjudication", err)
 	}
 }
 
@@ -172,7 +197,12 @@ func exactGateFixture() (benchmark.Corpus, []review.Result, []review.Assessment)
 			Paths:       []string{"compose.yaml"},
 		})
 
-		result := review.Result{CaseID: caseID, Status: review.StatusIncomplete}
+		result := review.Result{
+			CaseID:          caseID,
+			Status:          review.StatusIncomplete,
+			EngineVersion:   "v0.1.0-test",
+			RulePackVersion: "v0.1.0-test",
+		}
 		if index < 14 {
 			result.Status = review.StatusComplete
 		}

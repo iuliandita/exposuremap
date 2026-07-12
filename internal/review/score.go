@@ -39,6 +39,9 @@ func Score(corpus benchmark.Corpus, results []Result, assessments []Assessment) 
 		if result.Status != StatusComplete && result.Status != StatusIncomplete {
 			errorsFound = append(errorsFound, fmt.Sprintf("case %s has invalid result status %q", result.CaseID, result.Status))
 		}
+		if result.EngineVersion == "" || result.RulePackVersion == "" {
+			errorsFound = append(errorsFound, fmt.Sprintf("case %s requires engine and rule-pack versions", result.CaseID))
+		}
 		if result.ObservedElements < 0 || result.ResolvedElements < 0 || result.ResolvedElements > result.ObservedElements {
 			errorsFound = append(errorsFound, fmt.Sprintf("case %s has invalid resolution counts", result.CaseID))
 		}
@@ -215,7 +218,8 @@ func disagree(left, right Assessment) bool {
 	if left.FactuallyCorrect != right.FactuallyCorrect ||
 		left.SeverityJustified != right.SeverityJustified ||
 		left.UsefulBeyondRawDiff != right.UsefulBeyondRawDiff ||
-		left.MissedChange != right.MissedChange {
+		left.MissedChange != right.MissedChange ||
+		!sameStringSet(left.UnsupportedClaims, right.UnsupportedClaims) {
 		return true
 	}
 	leftFindings := findingReviewsByID(left.FindingReviews)
@@ -227,6 +231,16 @@ func disagree(left, right Assessment) bool {
 		}
 	}
 	return false
+}
+
+func sameStringSet(left, right []string) bool {
+	left = slices.Clone(left)
+	right = slices.Clone(right)
+	slices.Sort(left)
+	slices.Sort(right)
+	left = slices.Compact(left)
+	right = slices.Compact(right)
+	return slices.Equal(left, right)
 }
 
 func findingReviewsByID(reviews []FindingReview) map[string]FindingReview {

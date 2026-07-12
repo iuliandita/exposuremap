@@ -36,6 +36,8 @@ type Finding struct {
 type Result struct {
 	CaseID           string    `json:"case_id"`
 	Status           Status    `json:"status"`
+	EngineVersion    string    `json:"engine_version"`
+	RulePackVersion  string    `json:"rule_pack_version"`
 	ObservedElements int       `json:"observed_elements"`
 	ResolvedElements int       `json:"resolved_elements"`
 	ProposedFailure  bool      `json:"proposed_failure"`
