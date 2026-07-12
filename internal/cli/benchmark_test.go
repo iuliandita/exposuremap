@@ -326,6 +326,26 @@ type cliContentClient struct {
 	calls []string
 }
 
+func (client *cliContentClient) ListFiles(
+	_ context.Context,
+	_, _ string,
+	sha string,
+	paths []string,
+) (map[string]githubapi.FileMetadata, error) {
+	if client.err != nil {
+		return nil, client.err
+	}
+	file, exists := client.files[sha]
+	if !exists {
+		return nil, errors.New("missing test file")
+	}
+	result := make(map[string]githubapi.FileMetadata, len(paths))
+	for _, path := range paths {
+		result[path] = githubapi.FileMetadata{BlobSHA: file.BlobSHA}
+	}
+	return result, nil
+}
+
 func (client *cliContentClient) GetFile(
 	_ context.Context,
 	_, _ string,

@@ -25,6 +25,13 @@ const (
 
 // ContentClient is the immutable GitHub content surface needed by Materialize.
 type ContentClient interface {
+	ListFiles(
+		ctx context.Context,
+		owner string,
+		repository string,
+		commitSHA string,
+		paths []string,
+	) (map[string]githubapi.FileMetadata, error)
 	GetFile(
 		ctx context.Context,
 		owner string,
@@ -222,13 +229,21 @@ func materializeRevision(
 	caseDirectory string,
 	totalBytes *int64,
 ) ([]MaterializedFile, error) {
+	metadata, err := client.ListFiles(ctx, owner, repository, sha, paths)
+	if err != nil {
+		return nil, fmt.Errorf("resolve regular files: %w", err)
+	}
 	files := make([]MaterializedFile, 0, len(paths))
 	for _, repositoryPath := range paths {
+		expected, exists := metadata[repositoryPath]
+		if !exists || expected.BlobSHA == "" {
+			return nil, fmt.Errorf("missing Git tree metadata for %s", repositoryPath)
+		}
 		file, err := client.GetFile(ctx, owner, repository, sha, repositoryPath, maxMaterializedFile)
 		if err != nil {
 			return nil, fmt.Errorf("fetch %s: %w", repositoryPath, err)
 		}
-		if file.BlobSHA == "" || len(file.Content) > maxMaterializedFile {
+		if file.BlobSHA != expected.BlobSHA || len(file.Content) > maxMaterializedFile {
 			return nil, fmt.Errorf("invalid file response for %s", repositoryPath)
 		}
 		*totalBytes += int64(len(file.Content))

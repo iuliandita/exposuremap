@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +20,8 @@ const (
 	apiVersion     = "2026-03-10"
 	defaultBaseURL = "https://api.github.com/"
 	maxErrorBytes  = 1 << 20
+	maxCommitBytes = 64 << 10
+	maxTreeBytes   = 8 << 20
 )
 
 // Client is the narrow GitHub REST client used by corpus acquisition.
@@ -45,6 +48,11 @@ type Commit struct {
 type File struct {
 	BlobSHA string
 	Content []byte
+}
+
+// FileMetadata is the Git tree identity for one regular file.
+type FileMetadata struct {
+	BlobSHA string
 }
 
 // APIError is a non-success response from GitHub.
@@ -220,17 +228,123 @@ func (client Client) GetFile(
 	return File{BlobSHA: document.SHA, Content: content}, nil
 }
 
+// ListFiles resolves paths through Git trees and rejects symlinks and submodules.
+func (client Client) ListFiles(
+	ctx context.Context,
+	owner string,
+	repository string,
+	commitSHA string,
+	filePaths []string,
+) (map[string]FileMetadata, error) {
+	paths := slices.Clone(filePaths)
+	slices.Sort(paths)
+	for index, filePath := range paths {
+		if _, err := safePathSegments(filePath); err != nil {
+			return nil, err
+		}
+		if index > 0 && filePath == paths[index-1] {
+			return nil, fmt.Errorf("duplicate repository path %q", filePath)
+		}
+	}
+	commitEndpoint, err := client.endpoint("repos", owner, repository, "git", "commits", commitSHA)
+	if err != nil {
+		return nil, err
+	}
+	var commit struct {
+		Tree struct {
+			SHA string `json:"sha"`
+		} `json:"tree"`
+	}
+	if err := client.getBounded(ctx, commitEndpoint.String(), &commit, maxCommitBytes); err != nil {
+		return nil, fmt.Errorf("resolve commit tree: %w", err)
+	}
+	if commit.Tree.SHA == "" {
+		return nil, fmt.Errorf("GitHub commit has no tree SHA")
+	}
+
+	treeCache := make(map[string]treeDocument)
+	result := make(map[string]FileMetadata, len(paths))
+	for _, filePath := range paths {
+		segments, _ := safePathSegments(filePath)
+		treeSHA := commit.Tree.SHA
+		for index, segment := range segments {
+			tree, exists := treeCache[treeSHA]
+			if !exists {
+				tree, err = client.loadTree(ctx, owner, repository, treeSHA)
+				if err != nil {
+					return nil, err
+				}
+				treeCache[treeSHA] = tree
+			}
+			entry, exists := tree.entry(segment)
+			if !exists {
+				return nil, fmt.Errorf("repository path %q does not exist at commit", filePath)
+			}
+			last := index == len(segments)-1
+			if last {
+				if entry.Type != "blob" || entry.SHA == "" || !regularFileMode(entry.Mode) {
+					return nil, fmt.Errorf("repository path %q is not a regular file", filePath)
+				}
+				result[filePath] = FileMetadata{BlobSHA: entry.SHA}
+				continue
+			}
+			if entry.Type != "tree" || entry.Mode != "040000" || entry.SHA == "" {
+				return nil, fmt.Errorf("repository path %q crosses a non-directory", filePath)
+			}
+			treeSHA = entry.SHA
+		}
+	}
+	return result, nil
+}
+
+type treeEntry struct {
+	Path string `json:"path"`
+	Mode string `json:"mode"`
+	Type string `json:"type"`
+	SHA  string `json:"sha"`
+}
+
+type treeDocument struct {
+	Truncated bool        `json:"truncated"`
+	Tree      []treeEntry `json:"tree"`
+}
+
+func (client Client) loadTree(ctx context.Context, owner, repository, sha string) (treeDocument, error) {
+	endpoint, err := client.endpoint("repos", owner, repository, "git", "trees", sha)
+	if err != nil {
+		return treeDocument{}, err
+	}
+	var tree treeDocument
+	if err := client.getBounded(ctx, endpoint.String(), &tree, maxTreeBytes); err != nil {
+		return treeDocument{}, fmt.Errorf("load Git tree %s: %w", sha, err)
+	}
+	if tree.Truncated {
+		return treeDocument{}, fmt.Errorf("Git tree %s is truncated", sha)
+	}
+	return tree, nil
+}
+
+func (tree treeDocument) entry(name string) (treeEntry, bool) {
+	for _, entry := range tree.Tree {
+		if entry.Path == name {
+			return entry, true
+		}
+	}
+	return treeEntry{}, false
+}
+
+func regularFileMode(mode string) bool {
+	return mode == "100644" || mode == "100755"
+}
+
 func (client Client) endpoint(parts ...string) (*url.URL, error) {
 	baseURL, err := client.configuredBaseURL()
 	if err != nil {
 		return nil, err
 	}
 	copyURL := *baseURL
-	escaped := make([]string, 0, len(parts))
-	for _, part := range parts {
-		escaped = append(escaped, url.PathEscape(part))
-	}
-	copyURL.Path = strings.TrimSuffix(copyURL.Path, "/") + "/" + strings.Join(escaped, "/")
+	copyURL.Path = strings.TrimSuffix(copyURL.Path, "/") + "/" + strings.Join(parts, "/")
+	copyURL.RawPath = ""
 	copyURL.RawQuery = ""
 	copyURL.Fragment = ""
 	return &copyURL, nil
@@ -267,6 +381,44 @@ func (client Client) get(ctx context.Context, target string, destination any) (s
 		return "", fmt.Errorf("decode GitHub API response: %w", err)
 	}
 	return nextLink(response.Header.Values("Link")), nil
+}
+
+func (client Client) getBounded(ctx context.Context, target string, destination any, maxBytes int64) error {
+	targetURL, err := url.Parse(target)
+	if err != nil {
+		return fmt.Errorf("parse GitHub API request URL: %w", err)
+	}
+	baseURL, err := client.configuredBaseURL()
+	if err != nil {
+		return err
+	}
+	if targetURL.Scheme != baseURL.Scheme || !strings.EqualFold(targetURL.Host, baseURL.Host) || targetURL.User != nil {
+		return fmt.Errorf("GitHub API request URL is outside configured API origin")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return fmt.Errorf("create GitHub API request: %w", err)
+	}
+	client.setHeaders(request)
+	response, err := client.configuredHTTPClient().Do(request)
+	if err != nil {
+		return fmt.Errorf("send GitHub API request: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return decodeAPIError(response)
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxBytes+1))
+	if err != nil {
+		return fmt.Errorf("read GitHub API response: %w", err)
+	}
+	if int64(len(body)) > maxBytes {
+		return fmt.Errorf("GitHub API response exceeds %d bytes", maxBytes)
+	}
+	if err := json.Unmarshal(body, destination); err != nil {
+		return fmt.Errorf("decode GitHub API response: %w", err)
+	}
+	return nil
 }
 
 func (client Client) setHeaders(request *http.Request) {

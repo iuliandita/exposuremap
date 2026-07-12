@@ -163,10 +163,53 @@ func TestMaterializeRejectsTotalCaseSize(t *testing.T) {
 	}
 }
 
+func TestMaterializeRejectsRepositorySymlinkBeforeFetchingContent(t *testing.T) {
+	corpus := materializeCorpus([]string{"compose.yaml"})
+	client := &fakeContentClient{
+		files: map[string]githubapi.File{
+			strings.Repeat("a", 40) + "|compose.yaml": {BlobSHA: "target", Content: []byte("services: {}\n")},
+			strings.Repeat("b", 40) + "|compose.yaml": {BlobSHA: "target", Content: []byte("services: {}\n")},
+		},
+		listErr: errors.New("repository path is not a regular file"),
+	}
+
+	_, err := benchmark.Materialize(context.Background(), client, corpus, filepath.Join(t.TempDir(), "cache"))
+
+	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("Materialize() error = %v, want symlink rejection", err)
+	}
+	if len(client.calls) != 0 {
+		t.Fatalf("content calls = %#v, want none", client.calls)
+	}
+}
+
 type fakeContentClient struct {
-	files map[string]githubapi.File
-	err   error
-	calls []string
+	files     map[string]githubapi.File
+	err       error
+	listErr   error
+	calls     []string
+	listCalls []string
+}
+
+func (client *fakeContentClient) ListFiles(
+	_ context.Context,
+	_, _ string,
+	sha string,
+	paths []string,
+) (map[string]githubapi.FileMetadata, error) {
+	client.listCalls = append(client.listCalls, sha)
+	if client.listErr != nil {
+		return nil, client.listErr
+	}
+	result := make(map[string]githubapi.FileMetadata, len(paths))
+	for _, path := range paths {
+		file, exists := client.files[sha+"|"+path]
+		if !exists {
+			return nil, errors.New("missing fake metadata")
+		}
+		result[path] = githubapi.FileMetadata{BlobSHA: file.BlobSHA}
+	}
+	return result, nil
 }
 
 func (client *fakeContentClient) GetFile(

@@ -172,6 +172,24 @@ func TestGetFileFetchesImmutableBoundedContent(t *testing.T) {
 	}
 }
 
+func TestGetFileEscapesRepositoryPathOnce(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/repos/acme/widget/contents/deploy/my compose.yaml" {
+			t.Errorf("decoded path = %q, want path containing a space", request.URL.Path)
+		}
+		fmt.Fprint(response, `{"type":"file","sha":"blob","size":1,"encoding":"base64","content":"eA=="}`)
+	}))
+	t.Cleanup(server.Close)
+	client := testClient(t, server)
+
+	_, err := client.GetFile(
+		context.Background(), "acme", "widget", strings.Repeat("a", 40), "deploy/my compose.yaml", 1,
+	)
+	if err != nil {
+		t.Fatalf("GetFile() error = %v", err)
+	}
+}
+
 func TestGetFileRejectsUnsafePathBeforeRequest(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests++ }))
@@ -247,6 +265,69 @@ func TestGetFileAcceptsGitHubBase64LineBreaksAtLimit(t *testing.T) {
 	}
 	if !slices.Equal(file.Content, contents) {
 		t.Fatalf("decoded content length = %d, want %d", len(file.Content), len(contents))
+	}
+}
+
+func TestListFilesResolvesRegularEntriesAndRejectsSymlinks(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		assertHeaders(t, request)
+		switch request.URL.Path {
+		case "/repos/acme/widget/git/commits/" + strings.Repeat("a", 40):
+			fmt.Fprint(response, `{"tree":{"sha":"root-tree"}}`)
+		case "/repos/acme/widget/git/trees/root-tree":
+			fmt.Fprint(response, `{"truncated":false,"tree":[
+                    {"path":"Dockerfile","mode":"100644","type":"blob","sha":"docker-blob"},
+                    {"path":"deploy","mode":"040000","type":"tree","sha":"deploy-tree"},
+                    {"path":"link.yaml","mode":"120000","type":"blob","sha":"link-blob"}
+                ]}`)
+		case "/repos/acme/widget/git/trees/deploy-tree":
+			fmt.Fprint(response, `{"truncated":false,"tree":[
+                    {"path":"compose.yaml","mode":"100755","type":"blob","sha":"compose-blob"}
+                ]}`)
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client := testClient(t, server)
+	sha := strings.Repeat("a", 40)
+
+	files, err := client.ListFiles(
+		context.Background(), "acme", "widget", sha, []string{"deploy/compose.yaml", "Dockerfile"},
+	)
+	if err != nil {
+		t.Fatalf("ListFiles() error = %v", err)
+	}
+	if files["Dockerfile"].BlobSHA != "docker-blob" || files["deploy/compose.yaml"].BlobSHA != "compose-blob" {
+		t.Fatalf("files = %#v", files)
+	}
+	if _, err := client.ListFiles(context.Background(), "acme", "widget", sha, []string{"link.yaml"}); err == nil ||
+		!strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("symlink ListFiles() error = %v, want rejection", err)
+	}
+}
+
+func TestListFilesRejectsMissingAndTruncatedTrees(t *testing.T) {
+	for name, tree := range map[string]string{
+		"missing":   `{"truncated":false,"tree":[]}`,
+		"truncated": `{"truncated":true,"tree":[]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				if strings.Contains(request.URL.Path, "/git/commits/") {
+					fmt.Fprint(response, `{"tree":{"sha":"root"}}`)
+					return
+				}
+				fmt.Fprint(response, tree)
+			}))
+			t.Cleanup(server.Close)
+			client := testClient(t, server)
+			if _, err := client.ListFiles(
+				context.Background(), "acme", "widget", strings.Repeat("a", 40), []string{"compose.yaml"},
+			); err == nil {
+				t.Fatal("ListFiles() error = nil")
+			}
+		})
 	}
 }
 
