@@ -110,6 +110,30 @@ func TestParseFileRejectsMalformedOrUnresolvedInput(t *testing.T) {
 	}
 }
 
+func TestParseFileUsesStableLoaderDiagnostic(t *testing.T) {
+	path := writeCompose(t, t.TempDir(), "compose.yaml", `
+services:
+  first:
+    image: postgres
+    volumes:
+      - ${FIRST_PATH}:/data
+  second:
+    image: postgres
+    volumes:
+      - ${SECOND_PATH}:/var/lib/postgresql/data
+`)
+
+	_, err := composeparser.ParseFile(context.Background(), path)
+
+	var incomplete *composeparser.IncompleteError
+	if !errors.As(err, &incomplete) {
+		t.Fatalf("error = %v, want *compose.IncompleteError", err)
+	}
+	if got, want := incomplete.Error(), "parse compose file: invalid or unresolved Compose model"; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
+	}
+}
+
 func serviceNamed(t *testing.T, revision graph.Revision, name string) graph.Service {
 	t.Helper()
 	for _, service := range revision.Services {

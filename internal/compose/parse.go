@@ -50,14 +50,14 @@ func ParseFile(ctx context.Context, filePath string) (graph.Revision, error) {
 
 	model, err := loader.LoadModelWithContext(ctx, details, options)
 	if err != nil {
-		return graph.Revision{}, incomplete("parse compose file: %v", err)
+		return graph.Revision{}, incomplete("parse compose file: invalid or unresolved Compose model")
 	}
 	if reason := unsupportedConstruct(model); reason != "" {
 		return graph.Revision{}, incomplete("unsupported Compose construct: %s", reason)
 	}
 	project, err := loader.LoadWithContext(ctx, details, options)
 	if err != nil {
-		return graph.Revision{}, incomplete("parse compose file: %v", err)
+		return graph.Revision{}, incomplete("parse compose file: invalid or unresolved Compose model")
 	}
 
 	revision := graph.Revision{Complete: true, Services: make([]graph.Service, 0, len(project.Services))}
