@@ -60,6 +60,14 @@ func Validate(corpus Corpus) []Problem {
 		if item.Kind != CaseReal && item.Kind != CaseMutation {
 			problems = addProblem(problems, caseID, "kind", "must be real or mutation")
 		}
+		if item.Kind == CaseReal {
+			if item.PullRequest <= 0 {
+				problems = addProblem(problems, caseID, "pull_request", "is required for real cases")
+			}
+			if item.MergedAt.IsZero() {
+				problems = addProblem(problems, caseID, "merged_at", "is required for real cases")
+			}
+		}
 		if item.Kind == CaseMutation && strings.TrimSpace(item.ExpectedBoundary) == "" {
 			problems = addProblem(problems, caseID, "expected_boundary", "is required for mutation cases")
 		}

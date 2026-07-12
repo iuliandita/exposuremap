@@ -95,6 +95,20 @@ func TestValidateRequiresExpectedBoundaryForMutation(t *testing.T) {
 	}
 }
 
+func TestValidateRequiresSourceMetadataForRealCase(t *testing.T) {
+	corpus := validCorpus()
+	corpus.Cases[0].PullRequest = 0
+	corpus.Cases[0].MergedAt = time.Time{}
+
+	problems := benchmark.Validate(corpus)
+	if !hasProblem(problems, corpus.Cases[0].ID, "pull_request", "required") {
+		t.Fatalf("Validate() problems = %#v, want required pull request", problems)
+	}
+	if !hasProblem(problems, corpus.Cases[0].ID, "merged_at", "required") {
+		t.Fatalf("Validate() problems = %#v, want required merge time", problems)
+	}
+}
+
 func TestValidateKeepsRepositoryInOneSplit(t *testing.T) {
 	corpus := validCorpus()
 	second := corpus.Cases[0]
