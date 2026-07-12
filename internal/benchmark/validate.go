@@ -35,7 +35,8 @@ func Validate(corpus Corpus) []Problem {
 			seenIDs[item.ID] = struct{}{}
 		}
 
-		if !isGitHubRepository(item.Repository) {
+		repositoryKey, validRepository := githubRepositoryKey(item.Repository)
+		if !validRepository {
 			problems = addProblem(problems, caseID, "repository", "must be an https://github.com/OWNER/REPOSITORY URL")
 		}
 		if item.LicenseURL == "" {
@@ -74,10 +75,10 @@ func Validate(corpus Corpus) []Problem {
 
 		if item.Split != SplitTraining && item.Split != SplitValidation && item.Split != SplitEvaluation {
 			problems = addProblem(problems, caseID, "split", "must be training, validation, or evaluation")
-		} else if previous, exists := repositorySplits[item.Repository]; exists && previous != item.Split {
+		} else if previous, exists := repositorySplits[repositoryKey]; validRepository && exists && previous != item.Split {
 			problems = addProblem(problems, caseID, "split", "repository must remain in one split")
-		} else {
-			repositorySplits[item.Repository] = item.Split
+		} else if validRepository {
+			repositorySplits[repositoryKey] = item.Split
 		}
 
 		if len(item.Paths) == 0 {
@@ -120,13 +121,22 @@ func isSHA(value string) bool {
 	return err == nil
 }
 
-func isGitHubRepository(value string) bool {
+func githubRepositoryKey(value string) (string, bool) {
 	parsed, err := url.Parse(value)
-	if err != nil || parsed.Scheme != "https" || parsed.Host != "github.com" || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return false
+	if err != nil || parsed.Scheme != "https" || parsed.Host != "github.com" || parsed.User != nil ||
+		parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", false
 	}
 	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
-	return len(parts) == 2 && parts[0] != "" && parts[1] != ""
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", false
+	}
+	owner := strings.ToLower(parts[0])
+	repository := strings.TrimSuffix(strings.ToLower(parts[1]), ".git")
+	if repository == "" {
+		return "", false
+	}
+	return owner + "/" + repository, true
 }
 
 func isSafeRelativePath(value string) bool {

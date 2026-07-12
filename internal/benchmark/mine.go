@@ -173,7 +173,8 @@ func Mine(
 
 func repositoryParts(repositoryURL string) (string, string, error) {
 	parsed, err := url.Parse(repositoryURL)
-	if err != nil || parsed.Scheme != "https" || parsed.Host != "github.com" {
+	if err != nil || parsed.Scheme != "https" || parsed.Host != "github.com" ||
+		parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return "", "", fmt.Errorf("invalid GitHub repository URL %q", repositoryURL)
 	}
 	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")

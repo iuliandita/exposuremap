@@ -130,13 +130,9 @@ func (client Client) ListPullRequestsForCommit(ctx context.Context, owner, repos
 }
 
 func (client Client) endpoint(parts ...string) (*url.URL, error) {
-	baseURL := client.BaseURL
-	if baseURL == nil {
-		parsed, err := url.Parse(defaultBaseURL)
-		if err != nil {
-			return nil, fmt.Errorf("parse default GitHub API URL: %w", err)
-		}
-		baseURL = parsed
+	baseURL, err := client.configuredBaseURL()
+	if err != nil {
+		return nil, err
 	}
 	copyURL := *baseURL
 	escaped := make([]string, 0, len(parts))
@@ -150,6 +146,17 @@ func (client Client) endpoint(parts ...string) (*url.URL, error) {
 }
 
 func (client Client) get(ctx context.Context, target string, destination any) (string, error) {
+	targetURL, err := url.Parse(target)
+	if err != nil {
+		return "", fmt.Errorf("parse GitHub API request URL: %w", err)
+	}
+	baseURL, err := client.configuredBaseURL()
+	if err != nil {
+		return "", err
+	}
+	if targetURL.Scheme != baseURL.Scheme || !strings.EqualFold(targetURL.Host, baseURL.Host) || targetURL.User != nil {
+		return "", fmt.Errorf("GitHub API pagination URL is outside configured API origin")
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return "", fmt.Errorf("create GitHub API request: %w", err)
@@ -177,6 +184,17 @@ func (client Client) get(ctx context.Context, target string, destination any) (s
 		return "", fmt.Errorf("decode GitHub API response: %w", err)
 	}
 	return nextLink(response.Header.Values("Link")), nil
+}
+
+func (client Client) configuredBaseURL() (*url.URL, error) {
+	if client.BaseURL != nil {
+		return client.BaseURL, nil
+	}
+	parsed, err := url.Parse(defaultBaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse default GitHub API URL: %w", err)
+	}
+	return parsed, nil
 }
 
 func decodeAPIError(response *http.Response) error {

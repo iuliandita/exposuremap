@@ -147,6 +147,24 @@ func TestMinePropagatesHistoryErrors(t *testing.T) {
 	}
 }
 
+func TestMineRejectsDecoratedRepositoryURLBeforeHistoryCalls(t *testing.T) {
+	client := &fakeHistoryClient{}
+	seed := benchmark.Seed{
+		Repository:     "https://github.com/acme/widget?unexpected=true",
+		DefaultBranch:  "main",
+		CandidatePaths: []string{"compose.yaml"},
+		LicenseURL:     "https://github.com/acme/widget/blob/main/LICENSE",
+	}
+
+	_, err := benchmark.Mine(context.Background(), client, seed, benchmark.SplitTraining, 10, 10)
+	if err == nil || !strings.Contains(err.Error(), "invalid GitHub repository URL") {
+		t.Fatalf("Mine() error = %v, want invalid repository URL", err)
+	}
+	if len(client.commitCalls) != 0 {
+		t.Fatalf("history calls = %#v, want none", client.commitCalls)
+	}
+}
+
 type fakeHistoryClient struct {
 	commits          map[string][]githubapi.Commit
 	pullRequests     map[string][]githubapi.PullRequest

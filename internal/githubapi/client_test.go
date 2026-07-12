@@ -122,6 +122,30 @@ func TestClientReturnsTypedAPIError(t *testing.T) {
 	}
 }
 
+func TestClientRejectsPaginationOutsideAPIOrigin(t *testing.T) {
+	outsideRequests := 0
+	outside := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		outsideRequests++
+		fmt.Fprint(response, `[]`)
+	}))
+	t.Cleanup(outside.Close)
+
+	api := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.Header().Set("Link", fmt.Sprintf("<%s/next>; rel=\"next\"", outside.URL))
+		fmt.Fprint(response, `[{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]`)
+	}))
+	t.Cleanup(api.Close)
+
+	client := testClient(t, api)
+	_, err := client.ListCommitsForPath(context.Background(), "acme", "widget", "main", "compose.yaml", 2)
+	if err == nil || !strings.Contains(err.Error(), "outside configured API origin") {
+		t.Fatalf("ListCommitsForPath() error = %v, want cross-origin rejection", err)
+	}
+	if outsideRequests != 0 {
+		t.Fatalf("outside origin received %d requests, want 0", outsideRequests)
+	}
+}
+
 func testClient(t *testing.T, server *httptest.Server) githubapi.Client {
 	t.Helper()
 	baseURL, err := url.Parse(server.URL + "/")

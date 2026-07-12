@@ -22,7 +22,7 @@ func TestValidateRejectsInvalidCaseFields(t *testing.T) {
 	corpus.SchemaVersion = 2
 	corpus.Cases[0] = benchmark.Case{
 		ID:         "",
-		Repository: "git://github.com/example/project",
+		Repository: "https://credential@github.com/example/project",
 		LicenseURL: "",
 		BaseSHA:    strings.Repeat("A", 40),
 		HeadSHA:    strings.Repeat("A", 40),
@@ -113,6 +113,7 @@ func TestValidateKeepsRepositoryInOneSplit(t *testing.T) {
 	corpus := validCorpus()
 	second := corpus.Cases[0]
 	second.ID = "immich-pr-101"
+	second.Repository = "https://github.com/IMMICH-APP/IMMICH"
 	second.HeadSHA = strings.Repeat("c", 40)
 	second.Split = benchmark.SplitEvaluation
 	corpus.Cases = append(corpus.Cases, second)
