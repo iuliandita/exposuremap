@@ -2,11 +2,14 @@ package githubapi
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -36,6 +39,12 @@ type PullRequest struct {
 // Commit identifies one immutable repository revision.
 type Commit struct {
 	SHA string `json:"sha"`
+}
+
+// File is one immutable regular repository file.
+type File struct {
+	BlobSHA string
+	Content []byte
 }
 
 // APIError is a non-success response from GitHub.
@@ -129,6 +138,88 @@ func (client Client) ListPullRequestsForCommit(ctx context.Context, owner, repos
 	return result, nil
 }
 
+// GetFile returns one repository file at an immutable ref without following download URLs.
+func (client Client) GetFile(
+	ctx context.Context,
+	owner string,
+	repository string,
+	sha string,
+	filePath string,
+	maxBytes int,
+) (File, error) {
+	segments, err := safePathSegments(filePath)
+	if err != nil {
+		return File{}, err
+	}
+	if maxBytes <= 0 || maxBytes > int((math.MaxInt64-(64<<10))/2) {
+		return File{}, fmt.Errorf("invalid file size limit")
+	}
+	parts := append([]string{"repos", owner, repository, "contents"}, segments...)
+	endpoint, err := client.endpoint(parts...)
+	if err != nil {
+		return File{}, err
+	}
+	query := endpoint.Query()
+	query.Set("ref", sha)
+	endpoint.RawQuery = query.Encode()
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return File{}, fmt.Errorf("create GitHub API request: %w", err)
+	}
+	client.setHeaders(request)
+	httpClient := client.configuredHTTPClient()
+	response, err := httpClient.Do(request)
+	if err != nil {
+		return File{}, fmt.Errorf("send GitHub API request: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return File{}, decodeAPIError(response)
+	}
+
+	responseLimit := int64(maxBytes)*2 + (64 << 10)
+	body, err := io.ReadAll(io.LimitReader(response.Body, responseLimit+1))
+	if err != nil {
+		return File{}, fmt.Errorf("read GitHub file response: %w", err)
+	}
+	if int64(len(body)) > responseLimit {
+		return File{}, fmt.Errorf("GitHub file response exceeds %d bytes", responseLimit)
+	}
+	var document struct {
+		Type     string `json:"type"`
+		SHA      string `json:"sha"`
+		Size     int64  `json:"size"`
+		Encoding string `json:"encoding"`
+		Content  string `json:"content"`
+	}
+	if err := json.Unmarshal(body, &document); err != nil {
+		return File{}, fmt.Errorf("decode GitHub file response: %w", err)
+	}
+	if document.Type != "file" || document.SHA == "" {
+		return File{}, fmt.Errorf("GitHub content is not a regular file")
+	}
+	if document.Size < 0 || document.Size > int64(maxBytes) {
+		return File{}, fmt.Errorf("GitHub file exceeds %d bytes", maxBytes)
+	}
+	if document.Encoding != "base64" {
+		return File{}, fmt.Errorf("unsupported GitHub file encoding %q", document.Encoding)
+	}
+	encodedContent := strings.ReplaceAll(document.Content, "\n", "")
+	encodedContent = strings.ReplaceAll(encodedContent, "\r", "")
+	if base64.StdEncoding.DecodedLen(len(encodedContent)) > maxBytes+2 {
+		return File{}, fmt.Errorf("GitHub file exceeds %d bytes", maxBytes)
+	}
+	content, err := base64.StdEncoding.DecodeString(encodedContent)
+	if err != nil {
+		return File{}, fmt.Errorf("decode GitHub file content: %w", err)
+	}
+	if len(content) > maxBytes || int64(len(content)) != document.Size {
+		return File{}, fmt.Errorf("GitHub file size does not match decoded content")
+	}
+	return File{BlobSHA: document.SHA, Content: content}, nil
+}
+
 func (client Client) endpoint(parts ...string) (*url.URL, error) {
 	baseURL, err := client.configuredBaseURL()
 	if err != nil {
@@ -161,16 +252,8 @@ func (client Client) get(ctx context.Context, target string, destination any) (s
 	if err != nil {
 		return "", fmt.Errorf("create GitHub API request: %w", err)
 	}
-	request.Header.Set("Accept", "application/vnd.github+json")
-	request.Header.Set("X-GitHub-Api-Version", apiVersion)
-	if client.Token != "" {
-		request.Header.Set("Authorization", "Bearer "+client.Token)
-	}
-
-	httpClient := client.HTTPClient
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 15 * time.Second}
-	}
+	client.setHeaders(request)
+	httpClient := client.configuredHTTPClient()
 	response, err := httpClient.Do(request)
 	if err != nil {
 		return "", fmt.Errorf("send GitHub API request: %w", err)
@@ -184,6 +267,34 @@ func (client Client) get(ctx context.Context, target string, destination any) (s
 		return "", fmt.Errorf("decode GitHub API response: %w", err)
 	}
 	return nextLink(response.Header.Values("Link")), nil
+}
+
+func (client Client) setHeaders(request *http.Request) {
+	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("X-GitHub-Api-Version", apiVersion)
+	if client.Token != "" {
+		request.Header.Set("Authorization", "Bearer "+client.Token)
+	}
+}
+
+func (client Client) configuredHTTPClient() *http.Client {
+	if client.HTTPClient != nil {
+		return client.HTTPClient
+	}
+	return &http.Client{Timeout: 15 * time.Second}
+}
+
+func safePathSegments(filePath string) ([]string, error) {
+	if filePath == "" || path.IsAbs(filePath) || path.Clean(filePath) != filePath {
+		return nil, fmt.Errorf("unsafe repository path %q", filePath)
+	}
+	segments := strings.Split(filePath, "/")
+	for _, segment := range segments {
+		if segment == "" || segment == "." || segment == ".." {
+			return nil, fmt.Errorf("unsafe repository path %q", filePath)
+		}
+	}
+	return segments, nil
 }
 
 func (client Client) configuredBaseURL() (*url.URL, error) {

@@ -2,6 +2,7 @@ package githubapi_test
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
@@ -143,6 +144,109 @@ func TestClientRejectsPaginationOutsideAPIOrigin(t *testing.T) {
 	}
 	if outsideRequests != 0 {
 		t.Fatalf("outside origin received %d requests, want 0", outsideRequests)
+	}
+}
+
+func TestGetFileFetchesImmutableBoundedContent(t *testing.T) {
+	contents := []byte("services:\n  web:\n    image: nginx\n")
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		assertHeaders(t, request)
+		if request.URL.Path != "/repos/acme/widget/contents/deploy/compose.yaml" {
+			t.Errorf("path = %q", request.URL.Path)
+		}
+		if got := request.URL.Query().Get("ref"); got != strings.Repeat("a", 40) {
+			t.Errorf("ref = %q", got)
+		}
+		fmt.Fprintf(response, `{"type":"file","sha":"blob-sha","size":%d,"encoding":"base64","content":%q}`,
+			len(contents), base64.StdEncoding.EncodeToString(contents))
+	}))
+	t.Cleanup(server.Close)
+
+	client := testClient(t, server)
+	file, err := client.GetFile(context.Background(), "acme", "widget", strings.Repeat("a", 40), "deploy/compose.yaml", 1024)
+	if err != nil {
+		t.Fatalf("GetFile() error = %v", err)
+	}
+	if file.BlobSHA != "blob-sha" || !slices.Equal(file.Content, contents) {
+		t.Fatalf("file = %#v", file)
+	}
+}
+
+func TestGetFileRejectsUnsafePathBeforeRequest(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests++ }))
+	t.Cleanup(server.Close)
+	client := testClient(t, server)
+
+	for _, path := range []string{"", "/compose.yaml", "../compose.yaml", "deploy/../../compose.yaml", "deploy//compose.yaml"} {
+		if _, err := client.GetFile(context.Background(), "acme", "widget", strings.Repeat("a", 40), path, 1024); err == nil {
+			t.Errorf("GetFile(path=%q) error = nil", path)
+		}
+	}
+	if requests != 0 {
+		t.Fatalf("requests = %d, want zero", requests)
+	}
+}
+
+func TestGetFileRejectsInvalidOrOversizedContent(t *testing.T) {
+	tests := map[string]string{
+		"directory":        `{"type":"dir","sha":"x","size":0,"encoding":"none","content":""}`,
+		"declared too big": `{"type":"file","sha":"x","size":5,"encoding":"base64","content":"YQ=="}`,
+		"decoded too big":  `{"type":"file","sha":"x","size":1,"encoding":"base64","content":"YWJjZGU="}`,
+		"wrong encoding":   `{"type":"file","sha":"x","size":1,"encoding":"utf-8","content":"a"}`,
+		"malformed base64": `{"type":"file","sha":"x","size":1,"encoding":"base64","content":"%%%"}`,
+	}
+	for name, document := range tests {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+				fmt.Fprint(response, document)
+			}))
+			t.Cleanup(server.Close)
+			client := testClient(t, server)
+			if _, err := client.GetFile(context.Background(), "acme", "widget", strings.Repeat("a", 40), "compose.yaml", 4); err == nil {
+				t.Fatal("GetFile() error = nil")
+			}
+		})
+	}
+}
+
+func TestGetFileBoundsJSONResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintf(response, `{"type":"file","sha":"x","size":1,"encoding":"base64","content":"%s"}`, strings.Repeat("A", 100_000))
+	}))
+	t.Cleanup(server.Close)
+	client := testClient(t, server)
+
+	_, err := client.GetFile(context.Background(), "acme", "widget", strings.Repeat("a", 40), "compose.yaml", 4)
+	if err == nil || !strings.Contains(err.Error(), "response exceeds") {
+		t.Fatalf("GetFile() error = %v, want bounded-response error", err)
+	}
+}
+
+func TestGetFileAcceptsGitHubBase64LineBreaksAtLimit(t *testing.T) {
+	contents := []byte(strings.Repeat("x", 1024))
+	encoded := base64.StdEncoding.EncodeToString(contents)
+	var wrapped strings.Builder
+	for index, character := range encoded {
+		if index > 0 && index%60 == 0 {
+			wrapped.WriteByte('\n')
+		}
+		wrapped.WriteRune(character)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintf(response, `{"type":"file","sha":"blob","size":%d,"encoding":"base64","content":%q}`,
+			len(contents), wrapped.String())
+	}))
+	t.Cleanup(server.Close)
+	client := testClient(t, server)
+
+	file, err := client.GetFile(context.Background(), "acme", "widget", strings.Repeat("a", 40), "compose.yaml", len(contents))
+
+	if err != nil {
+		t.Fatalf("GetFile() error = %v", err)
+	}
+	if !slices.Equal(file.Content, contents) {
+		t.Fatalf("decoded content length = %d, want %d", len(file.Content), len(contents))
 	}
 }
 
