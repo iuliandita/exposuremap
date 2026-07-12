@@ -5,7 +5,10 @@ import (
 	"io"
 )
 
-const usage = "usage: exposuremap benchmark <validate|mine|score>\n"
+const usage = `usage:
+  exposuremap diff --base PATH --head PATH [--format json|markdown]
+  exposuremap benchmark <validate|mine|score>
+`
 
 // Run executes the command and returns its process exit code.
 func Run(args []string, stdout, stderr io.Writer) int {
@@ -20,6 +23,9 @@ func RunWithDependencies(args []string, stdout, stderr io.Writer, dependencies D
 	}
 	if args[0] == "benchmark" {
 		return runBenchmark(args[1:], stdout, stderr, normalizeDependencies(dependencies))
+	}
+	if args[0] == "diff" {
+		return runDiff(args[1:], stdout, stderr)
 	}
 
 	fmt.Fprintf(stderr, "unknown command %q\n", args[0])

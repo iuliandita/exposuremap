@@ -3,6 +3,7 @@ package compose
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -29,7 +30,7 @@ func (err *IncompleteError) Error() string {
 func ParseFile(ctx context.Context, filePath string) (graph.Revision, error) {
 	content, err := readRegularFile(filePath)
 	if err != nil {
-		return graph.Revision{}, incomplete("read compose file: %v", err)
+		return graph.Revision{}, incomplete("read compose file: %s", safeFileError(err))
 	}
 	details := types.ConfigDetails{
 		WorkingDir: filepath.Dir(filePath),
@@ -154,4 +155,12 @@ func unsupportedConstruct(model map[string]any) string {
 
 func incomplete(format string, arguments ...any) *IncompleteError {
 	return &IncompleteError{Reason: fmt.Sprintf(format, arguments...)}
+}
+
+func safeFileError(err error) string {
+	var pathError *os.PathError
+	if errors.As(err, &pathError) {
+		return pathError.Op + ": " + pathError.Err.Error()
+	}
+	return err.Error()
 }
