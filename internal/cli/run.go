@@ -7,7 +7,7 @@ import (
 
 const usage = `usage:
   exposuremap diff --base PATH --head PATH [--format json|markdown]
-  exposuremap benchmark <validate|mine|score>
+  exposuremap benchmark <validate|mine|materialize|score>
 `
 
 // Run executes the command and returns its process exit code.
