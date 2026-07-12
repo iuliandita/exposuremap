@@ -76,6 +76,9 @@ func compareBindings(base, head graph.Service) []report.Finding {
 		if !graph.IsWildcardHost(binding.HostIP) {
 			continue
 		}
+		if containsWildcard(baseBindings) {
+			continue
+		}
 		for _, baseBinding := range baseBindings {
 			if !graph.IsLoopbackHost(baseBinding.HostIP) {
 				continue
@@ -99,6 +102,15 @@ func compareBindings(base, head graph.Service) []report.Finding {
 		}
 	}
 	return result
+}
+
+func containsWildcard(bindings []graph.Binding) bool {
+	for _, binding := range bindings {
+		if graph.IsWildcardHost(binding.HostIP) {
+			return true
+		}
+	}
+	return false
 }
 
 func compareSensitiveCapabilities(base, head graph.Service) []report.Finding {

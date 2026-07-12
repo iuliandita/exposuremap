@@ -78,6 +78,21 @@ func TestCompareDoesNotDuplicateWidenedBindingAsNewPort(t *testing.T) {
 	}
 }
 
+func TestCompareDoesNotReportWideningWhenWildcardAlreadyExisted(t *testing.T) {
+	base := revision(graph.Service{Name: "web", Bindings: []graph.Binding{
+		{HostIP: "127.0.0.1", Published: "8080", Target: 80},
+		{HostIP: "0.0.0.0", Published: "8080", Target: 80},
+	}})
+	head := revision(graph.Service{Name: "web", Bindings: []graph.Binding{
+		{HostIP: "127.0.0.1", Published: "8080", Target: 80},
+		{HostIP: "", Published: "8080", Target: 80},
+	}})
+
+	if findings := analyze.Compare(base, head); len(findings) != 0 {
+		t.Fatalf("findings = %#v, want none when wildcard reachability already existed", findings)
+	}
+}
+
 func TestCompareRequiresHostExposureForSensitiveCapability(t *testing.T) {
 	base := revision(graph.Service{Name: "worker", Networks: []string{"default"}})
 	head := revision(graph.Service{
