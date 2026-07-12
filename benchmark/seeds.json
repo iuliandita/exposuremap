@@ -1,0 +1,145 @@
+{
+  "schema_version": 1,
+  "observed_at": "2026-07-12",
+  "repositories": [
+    {
+      "repository": "https://github.com/immich-app/immich",
+      "default_branch": "main",
+      "candidate_paths": [
+        "docker/docker-compose.yml",
+        "docker/docker-compose.prod.yml",
+        "server/Dockerfile"
+      ],
+      "license_url": "https://github.com/immich-app/immich/blob/main/LICENSE",
+      "license_spdx": "AGPL-3.0",
+      "role": "complex application"
+    },
+    {
+      "repository": "https://github.com/nextcloud/all-in-one",
+      "default_branch": "main",
+      "candidate_paths": [
+        "compose.yaml",
+        "Containers/apache/Caddyfile",
+        "Containers/mastercontainer/Dockerfile"
+      ],
+      "license_url": "https://github.com/nextcloud/all-in-one/blob/main/LICENSE",
+      "license_spdx": "AGPL-3.0",
+      "role": "ports, Docker socket, and Caddy"
+    },
+    {
+      "repository": "https://github.com/supabase/supabase",
+      "default_branch": "master",
+      "candidate_paths": [
+        "docker/docker-compose.yml",
+        "docker/docker-compose.caddy.yml",
+        "docker/docker-compose.nginx.yml",
+        "docker/volumes/proxy/caddy/Caddyfile"
+      ],
+      "license_url": "https://github.com/supabase/supabase/blob/master/LICENSE",
+      "license_spdx": "Apache-2.0",
+      "role": "large service graph and proxy variants"
+    },
+    {
+      "repository": "https://github.com/paperless-ngx/paperless-ngx",
+      "default_branch": "dev",
+      "candidate_paths": [
+        "docker/compose/docker-compose.postgres.yml",
+        "docker/compose/docker-compose.mariadb.yml",
+        "docker/compose/test-nginx.conf"
+      ],
+      "license_url": "https://github.com/paperless-ngx/paperless-ngx/blob/dev/LICENSE",
+      "license_spdx": "GPL-3.0",
+      "role": "Compose variants"
+    },
+    {
+      "repository": "https://github.com/mailcow/mailcow-dockerized",
+      "default_branch": "master",
+      "candidate_paths": [
+        "docker-compose.yml",
+        "data/Dockerfiles/nginx/Dockerfile"
+      ],
+      "license_url": "https://github.com/mailcow/mailcow-dockerized/blob/master/LICENSE",
+      "license_spdx": "GPL-3.0",
+      "role": "large network and binding graph"
+    },
+    {
+      "repository": "https://github.com/photoprism/photoprism",
+      "default_branch": "develop",
+      "candidate_paths": [
+        "compose.yaml",
+        "compose.nvidia.yaml",
+        "docker/demo/traefik.yaml"
+      ],
+      "license_url": "https://github.com/photoprism/photoprism/blob/develop/LICENSE",
+      "license_spdx": "NOASSERTION",
+      "role": "Compose variants and Traefik"
+    },
+    {
+      "repository": "https://github.com/outline/outline",
+      "default_branch": "main",
+      "candidate_paths": [
+        "docker-compose.yml",
+        "Dockerfile"
+      ],
+      "license_url": "https://github.com/outline/outline/blob/main/LICENSE",
+      "license_spdx": "NOASSERTION",
+      "role": "typical application stack"
+    },
+    {
+      "repository": "https://github.com/wg-easy/wg-easy",
+      "default_branch": "master",
+      "candidate_paths": [
+        "docker-compose.yml",
+        "Dockerfile"
+      ],
+      "license_url": "https://github.com/wg-easy/wg-easy/blob/master/LICENSE",
+      "license_spdx": "AGPL-3.0",
+      "role": "network-sensitive service"
+    },
+    {
+      "repository": "https://github.com/Stirling-Tools/Stirling-PDF",
+      "default_branch": "main",
+      "candidate_paths": [
+        "docker/compose/docker-compose.yml",
+        "docker/frontend/nginx.conf",
+        "docker/backend/Dockerfile"
+      ],
+      "license_url": "https://github.com/Stirling-Tools/Stirling-PDF/blob/main/LICENSE",
+      "license_spdx": "NOASSERTION",
+      "role": "Compose, nginx, and Dockerfiles"
+    },
+    {
+      "repository": "https://github.com/linkwarden/linkwarden",
+      "default_branch": "main",
+      "candidate_paths": [
+        "docker-compose.yml",
+        "Dockerfile"
+      ],
+      "license_url": "https://github.com/linkwarden/linkwarden/blob/main/LICENSE.md",
+      "license_spdx": "AGPL-3.0",
+      "role": "typical application stack"
+    },
+    {
+      "repository": "https://github.com/umami-software/umami",
+      "default_branch": "master",
+      "candidate_paths": [
+        "docker-compose.yml",
+        "Dockerfile"
+      ],
+      "license_url": "https://github.com/umami-software/umami/blob/master/LICENSE",
+      "license_spdx": "MIT",
+      "role": "small application stack"
+    },
+    {
+      "repository": "https://github.com/vegasbrianc/docker-traefik-prometheus",
+      "default_branch": "master",
+      "candidate_paths": [
+        "docker-compose.yml",
+        "cats.yml"
+      ],
+      "license_url": "https://github.com/vegasbrianc/docker-traefik-prometheus/blob/master/LICENSE",
+      "license_spdx": "MIT",
+      "role": "Traefik labels and routed services"
+    }
+  ]
+}
