@@ -27,6 +27,11 @@ go.work.sum
 # env file
 .env
 
+# Local plans, specifications, research, and private notes
+docs/local/
+AGENTS.md
+CLAUDE.md
+
 # Editor/IDE
 # .idea/
 # .vscode/
