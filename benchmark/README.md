@@ -40,6 +40,26 @@ go run ./cmd/exposuremap benchmark mine \
 
 The output file is created atomically with mode `0600` because private-repository metadata may be supported later.
 
+## Materialization
+
+Materialization resolves only the paths listed in a validated corpus, at its immutable base and head SHAs. It checks Git tree modes to reject symlinks and submodules, then fetches regular-file content and verifies that the returned blob SHA matches the tree. Source stays outside the repository in a caller-selected gitignored directory.
+
+```sh
+go run ./cmd/exposuremap benchmark materialize \
+  --corpus corpus.json \
+  --out docs/local/cases
+```
+
+The optional `GITHUB_TOKEN` is read from the environment. It is never written to the cache or command output.
+
+Each case is published atomically under `<out>/<case-id>/` with:
+
+- `base/` and `head/` source trees containing only corpus-listed paths.
+- `manifest.json` containing the repository, license metadata, revision SHAs, GitHub blob SHAs, byte counts, and SHA-256 checksums.
+- Directories restricted to `0700` and files to `0600`.
+
+The materializer allows at most 64 listed paths, 1 MiB per file, and 8 MiB across both revisions of a case. Existing cases are reused without network requests only after every file matches the manifest checksum and metadata. A partial or mismatched cache is an error; it is never silently accepted or overwritten.
+
 ## Validation
 
 ```sh
@@ -48,7 +68,7 @@ go run ./cmd/exposuremap benchmark validate --corpus corpus.json
 
 Exit codes:
 
-- `0`: valid corpus or passing score.
+- `0`: valid corpus, successful materialization, or passing score.
 - `1`: invalid corpus or failed technical gate.
 - `2`: invalid invocation, unreadable input, malformed JSON, API failure, or inconsistent review data.
 

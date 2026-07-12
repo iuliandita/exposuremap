@@ -21,12 +21,16 @@ import (
 type Dependencies struct {
 	Getenv           func(string) string
 	NewHistoryClient func(token string) benchmark.HistoryClient
+	NewContentClient func(token string) benchmark.ContentClient
 }
 
 func defaultDependencies() Dependencies {
 	return Dependencies{
 		Getenv: os.Getenv,
 		NewHistoryClient: func(token string) benchmark.HistoryClient {
+			return &githubapi.Client{Token: token}
+		},
+		NewContentClient: func(token string) benchmark.ContentClient {
 			return &githubapi.Client{Token: token}
 		},
 	}
@@ -40,12 +44,15 @@ func normalizeDependencies(dependencies Dependencies) Dependencies {
 	if dependencies.NewHistoryClient == nil {
 		dependencies.NewHistoryClient = defaults.NewHistoryClient
 	}
+	if dependencies.NewContentClient == nil {
+		dependencies.NewContentClient = defaults.NewContentClient
+	}
 	return dependencies
 }
 
 func runBenchmark(args []string, stdout, stderr io.Writer, dependencies Dependencies) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "benchmark subcommand is required: validate, mine, or score")
+		fmt.Fprintln(stderr, "benchmark subcommand is required: validate, mine, materialize, or score")
 		return 2
 	}
 	switch args[0] {
@@ -53,12 +60,44 @@ func runBenchmark(args []string, stdout, stderr io.Writer, dependencies Dependen
 		return runBenchmarkValidate(args[1:], stdout, stderr)
 	case "mine":
 		return runBenchmarkMine(args[1:], stdout, stderr, dependencies)
+	case "materialize":
+		return runBenchmarkMaterialize(args[1:], stdout, stderr, dependencies)
 	case "score":
 		return runBenchmarkScore(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown benchmark subcommand %q\n", args[0])
 		return 2
 	}
+}
+
+func runBenchmarkMaterialize(args []string, stdout, stderr io.Writer, dependencies Dependencies) int {
+	flags := flag.NewFlagSet("benchmark materialize", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	corpusPath := flags.String("corpus", "", "path to a corpus JSON file")
+	outputPath := flags.String("out", "", "directory for immutable case files")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if *corpusPath == "" || *outputPath == "" || flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "benchmark materialize requires --corpus PATH --out DIR")
+		return 2
+	}
+	var corpus benchmark.Corpus
+	if err := decodeJSONFile(*corpusPath, &corpus); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	client := dependencies.NewContentClient(dependencies.Getenv("GITHUB_TOKEN"))
+	summary, err := benchmark.Materialize(context.Background(), client, corpus, *outputPath)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	if err := encodeJSON(stdout, summary); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	return 0
 }
 
 func runBenchmarkValidate(args []string, stdout, stderr io.Writer) int {

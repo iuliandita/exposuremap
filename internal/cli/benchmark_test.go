@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -164,6 +165,96 @@ func TestBenchmarkScoreCommand(t *testing.T) {
 	}
 }
 
+func TestBenchmarkMaterializeCommandUsesTokenAndWritesCache(t *testing.T) {
+	directory := t.TempDir()
+	corpusPath := filepath.Join(directory, "corpus.json")
+	outputPath := filepath.Join(directory, "cache")
+	corpus := oneCaseCorpus()
+	writeJSON(t, corpusPath, corpus)
+	client := &cliContentClient{files: map[string]githubapi.File{
+		strings.Repeat("a", 40): {BlobSHA: "base-blob", Content: []byte("services: {}\n")},
+		strings.Repeat("b", 40): {BlobSHA: "head-blob", Content: []byte("services: {}\n")},
+	}}
+	var receivedToken string
+	dependencies := cli.Dependencies{
+		Getenv: func(name string) string {
+			if name == "GITHUB_TOKEN" {
+				return "materialize-token"
+			}
+			return ""
+		},
+		NewContentClient: func(token string) benchmark.ContentClient {
+			receivedToken = token
+			return client
+		},
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := cli.RunWithDependencies([]string{
+		"benchmark", "materialize", "--corpus", corpusPath, "--out", outputPath,
+	}, &stdout, &stderr, dependencies)
+
+	if code != 0 || stderr.Len() != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+	}
+	if receivedToken != "materialize-token" || strings.Contains(stdout.String(), receivedToken) {
+		t.Fatalf("token handling failed: received=%q stdout=%q", receivedToken, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"cases": 1`) || !strings.Contains(stdout.String(), `"files": 2`) {
+		t.Fatalf("stdout = %q, want materialize summary", stdout.String())
+	}
+	if _, err := os.Stat(filepath.Join(outputPath, corpus.Cases[0].ID, "manifest.json")); err != nil {
+		t.Fatalf("manifest stat error = %v", err)
+	}
+}
+
+func TestBenchmarkMaterializeCommandRejectsArgumentsAndInvalidCorpus(t *testing.T) {
+	for _, args := range [][]string{
+		{"benchmark", "materialize"},
+		{"benchmark", "materialize", "--corpus", "corpus.json"},
+		{"benchmark", "materialize", "--out", "cache"},
+	} {
+		var stdout bytes.Buffer
+		var stderr bytes.Buffer
+		if code := cli.Run(args, &stdout, &stderr); code != 2 || stderr.Len() == 0 {
+			t.Errorf("Run(%#v) code=%d stdout=%q stderr=%q", args, code, stdout.String(), stderr.String())
+		}
+	}
+
+	directory := t.TempDir()
+	corpusPath := filepath.Join(directory, "corpus.json")
+	invalid := oneCaseCorpus()
+	invalid.SchemaVersion = 2
+	writeJSON(t, corpusPath, invalid)
+	client := &cliContentClient{}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := cli.RunWithDependencies([]string{
+		"benchmark", "materialize", "--corpus", corpusPath, "--out", filepath.Join(directory, "cache"),
+	}, &stdout, &stderr, cli.Dependencies{NewContentClient: func(string) benchmark.ContentClient { return client }})
+	if code != 2 || len(client.calls) != 0 {
+		t.Fatalf("code=%d calls=%#v stdout=%q stderr=%q", code, client.calls, stdout.String(), stderr.String())
+	}
+}
+
+func TestBenchmarkMaterializeCommandPropagatesFetchFailure(t *testing.T) {
+	directory := t.TempDir()
+	corpusPath := filepath.Join(directory, "corpus.json")
+	writeJSON(t, corpusPath, oneCaseCorpus())
+	client := &cliContentClient{err: errors.New("fetch unavailable")}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := cli.RunWithDependencies([]string{
+		"benchmark", "materialize", "--corpus", corpusPath, "--out", filepath.Join(directory, "cache"),
+	}, &stdout, &stderr, cli.Dependencies{NewContentClient: func(string) benchmark.ContentClient { return client }})
+
+	if code != 2 || !strings.Contains(stderr.String(), "fetch unavailable") || stdout.Len() != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
 func oneCaseCorpus() benchmark.Corpus {
 	return benchmark.Corpus{
 		SchemaVersion: 1,
@@ -227,4 +318,48 @@ func (*cliHistoryClient) ListPullRequestsForCommit(
 		BaseSHA:  strings.Repeat("a", 40),
 		HeadSHA:  strings.Repeat("b", 40),
 	}}, nil
+}
+
+type cliContentClient struct {
+	files map[string]githubapi.File
+	err   error
+	calls []string
+}
+
+func (client *cliContentClient) ListFiles(
+	_ context.Context,
+	_, _ string,
+	sha string,
+	paths []string,
+) (map[string]githubapi.FileMetadata, error) {
+	if client.err != nil {
+		return nil, client.err
+	}
+	file, exists := client.files[sha]
+	if !exists {
+		return nil, errors.New("missing test file")
+	}
+	result := make(map[string]githubapi.FileMetadata, len(paths))
+	for _, path := range paths {
+		result[path] = githubapi.FileMetadata{BlobSHA: file.BlobSHA}
+	}
+	return result, nil
+}
+
+func (client *cliContentClient) GetFile(
+	_ context.Context,
+	_, _ string,
+	sha string,
+	path string,
+	_ int,
+) (githubapi.File, error) {
+	client.calls = append(client.calls, sha+"|"+path)
+	if client.err != nil {
+		return githubapi.File{}, client.err
+	}
+	file, exists := client.files[sha]
+	if !exists {
+		return githubapi.File{}, errors.New("missing test file")
+	}
+	return file, nil
 }
