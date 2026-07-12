@@ -41,6 +41,9 @@ func Validate(corpus Corpus) []Problem {
 		if item.LicenseURL == "" {
 			problems = addProblem(problems, caseID, "license_url", "is required")
 		}
+		if strings.TrimSpace(item.LicenseSPDX) == "" {
+			problems = addProblem(problems, caseID, "license_spdx", "is required")
+		}
 
 		baseValid := isSHA(item.BaseSHA)
 		headValid := isSHA(item.HeadSHA)

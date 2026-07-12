@@ -1,9 +1,12 @@
 package benchmark_test
 
 import (
+	"encoding/json"
+	"os"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/iuliandita/exposuremap/internal/benchmark"
 )
@@ -36,6 +39,7 @@ func TestValidateRejectsInvalidCaseFields(t *testing.T) {
 		"head_sha",
 		"id",
 		"kind",
+		"license_spdx",
 		"license_url",
 		"paths",
 		"paths",
@@ -44,6 +48,28 @@ func TestValidateRejectsInvalidCaseFields(t *testing.T) {
 	}
 	if !slices.Equal(fields, want) {
 		t.Fatalf("problem fields = %#v, want %#v; problems = %#v", fields, want, problems)
+	}
+}
+
+func TestSeedManifestContainsLicensedRelevantRepositories(t *testing.T) {
+	contents, err := os.ReadFile("../../benchmark/seeds.json")
+	if err != nil {
+		t.Fatalf("os.ReadFile() error = %v", err)
+	}
+	var manifest benchmark.SeedManifest
+	if err := json.Unmarshal(contents, &manifest); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if manifest.SchemaVersion != 1 || len(manifest.Repositories) != 12 {
+		t.Fatalf("seed manifest metadata = %#v", manifest)
+	}
+	for _, seed := range manifest.Repositories {
+		if seed.LicenseURL == "" || seed.LicenseSPDX == "" {
+			t.Errorf("seed %q lacks license metadata", seed.Repository)
+		}
+		if !slices.ContainsFunc(seed.CandidatePaths, benchmark.RelevantPath) {
+			t.Errorf("seed %q has no relevant path", seed.Repository)
+		}
 	}
 }
 
@@ -108,14 +134,17 @@ func validCorpus() benchmark.Corpus {
 	return benchmark.Corpus{
 		SchemaVersion: 1,
 		Cases: []benchmark.Case{{
-			ID:         "immich-pr-100",
-			Repository: "https://github.com/immich-app/immich",
-			LicenseURL: "https://github.com/immich-app/immich/blob/main/LICENSE",
-			BaseSHA:    strings.Repeat("a", 40),
-			HeadSHA:    strings.Repeat("b", 40),
-			Kind:       benchmark.CaseReal,
-			Split:      benchmark.SplitTraining,
-			Paths:      []string{"docker/docker-compose.yml"},
+			ID:          "immich-pr-100",
+			Repository:  "https://github.com/immich-app/immich",
+			LicenseURL:  "https://github.com/immich-app/immich/blob/main/LICENSE",
+			LicenseSPDX: "AGPL-3.0",
+			PullRequest: 100,
+			MergedAt:    time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC),
+			BaseSHA:     strings.Repeat("a", 40),
+			HeadSHA:     strings.Repeat("b", 40),
+			Kind:        benchmark.CaseReal,
+			Split:       benchmark.SplitTraining,
+			Paths:       []string{"docker/docker-compose.yml"},
 		}},
 	}
 }
