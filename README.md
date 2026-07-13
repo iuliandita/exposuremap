@@ -49,9 +49,33 @@ go run ./cmd/exposuremap diff \
   --format json
 ```
 
+When a graph-relevant Compose variable has a known nonsecret value, pass one explicit context file:
+
+```yaml
+# .exposuremap.yml
+schema_version: 1
+variables:
+  common:
+    DATA_ROOT: ./data
+  base:
+    WEB_PORT: "8080"
+  head:
+    WEB_PORT: "8081"
+```
+
+```sh
+go run ./cmd/exposuremap diff \
+  --base path/to/base/compose.yaml \
+  --head path/to/head/compose.yaml \
+  --context .exposuremap.yml \
+  --format json
+```
+
+`common` values apply to both revisions; `base` and `head` override them independently. Variable names use Compose identifier syntax and values must be YAML strings. ExposureMap never searches for this file automatically, and invalid context input is rejected without printing its path or values.
+
 Use `--format markdown` for a review-oriented report. Complete analyses are deliberately reported as `warn`, even with no findings. Unsupported or unresolved inputs are `incomplete`. Both exit `0`; this prototype cannot become an accidental CI gate. Invalid invocations and output failures exit `2`.
 
-Compose overrides, includes, extends, label files, Dockerfiles, proxy configuration, policy, nginx, Kubernetes, Terraform, live Docker state, firewalls, DNS, Nginx Proxy Manager, and Apache are outside the current analyzer slice. The adapter analyzes the default Compose projection with no profiles enabled, so profile-gated services are excluded. It does not infer profile settings or read process variables or `.env`. Service-level `env_file` declarations are accepted as container-environment metadata, but the referenced files are never read and their values do not affect the graph. The adapter rejects other external Compose inputs instead of reading them implicitly.
+Compose overrides, includes, extends, label files, Dockerfiles, proxy configuration, policy, nginx, Kubernetes, Terraform, live Docker state, firewalls, DNS, Nginx Proxy Manager, and Apache are outside the current analyzer slice. The adapter analyzes the default Compose projection with no profiles enabled, so profile-gated services are excluded. It does not infer profile settings or read process variables or `.env`; interpolation uses only inline defaults and values from an explicitly selected context file. Service-level `env_file` declarations are accepted as container-environment metadata, but the referenced files are never read and their values do not affect the graph. The adapter rejects other external Compose inputs instead of reading them implicitly.
 
 ## What exists now
 

@@ -6,7 +6,7 @@ import (
 )
 
 const usage = `usage:
-  exposuremap diff --base PATH --head PATH [--format json|markdown]
+  exposuremap diff --base PATH --head PATH [--context PATH] [--format json|markdown]
   exposuremap benchmark <validate|mine|materialize|mutate|run|score>
 `
 
