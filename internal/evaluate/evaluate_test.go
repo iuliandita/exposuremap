@@ -1,6 +1,7 @@
 package evaluate_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"github.com/iuliandita/exposuremap/internal/benchmark"
 	"github.com/iuliandita/exposuremap/internal/evaluate"
 	"github.com/iuliandita/exposuremap/internal/githubapi"
+	"github.com/iuliandita/exposuremap/internal/report"
 	"github.com/iuliandita/exposuremap/internal/review"
 )
 
@@ -43,6 +45,30 @@ func TestRunCaseProducesScorerResultAndStableFindingID(t *testing.T) {
 	}
 	if !first.Result.DetectedBoundary || first.Report.Analyzer.Findings[0].RuleID != "EM-COMPOSE-001" {
 		t.Fatalf("outcome = %#v", first)
+	}
+}
+
+func TestRunCasePreservesPeerChangesWithoutScorerFinding(t *testing.T) {
+	item := evaluationCase([]string{"compose.yaml"})
+	item.Kind = benchmark.CaseReal
+	item.ExpectedBoundary = ""
+	cache := materializeEvaluationCase(t, item, map[string][]byte{
+		item.BaseSHA: []byte(evaluationPeerCompose(false)),
+		item.HeadSHA: []byte(evaluationPeerCompose(true)),
+	})
+
+	outcome, err := evaluate.RunCase(context.Background(), cache, item)
+	if err != nil {
+		t.Fatalf("RunCase() error = %v", err)
+	}
+	if got := outcome.Report.Analyzer.Changes; len(got) != 1 || got[0].Kind != report.ChangePeerPathAdded {
+		t.Fatalf("analyzer changes = %#v", got)
+	}
+	if len(outcome.Result.Findings) != 0 || outcome.Result.DetectedBoundary || outcome.Result.ProposedFailure {
+		t.Fatalf("scorer result absorbed informational changes: %#v", outcome.Result)
+	}
+	if outcome.Result.RulePackVersion != "compose-v3" || outcome.Report.Analyzer.SchemaVersion != 2 {
+		t.Fatalf("version contract = %#v", outcome)
 	}
 }
 
@@ -87,8 +113,8 @@ func TestRunCaseReportsBothIncompleteRevisions(t *testing.T) {
 	if outcome.Result.Status != review.StatusIncomplete || len(outcome.Report.Analyzer.Diagnostics) != 2 {
 		t.Fatalf("outcome = %#v", outcome)
 	}
-	if outcome.Result.Findings == nil {
-		t.Fatal("incomplete result findings = nil, want stable empty array")
+	if outcome.Result.Findings == nil || outcome.Report.Analyzer.Changes == nil || outcome.Report.Analyzer.Findings == nil {
+		t.Fatalf("incomplete collections are nil: %#v", outcome)
 	}
 	if outcome.Report.Analyzer.Diagnostics[0] != "base: parse compose file: unresolved boundary interpolation in services.web.image" ||
 		outcome.Report.Analyzer.Diagnostics[1] != "head: parse compose file: unresolved boundary interpolation in services.web.image" {
@@ -98,9 +124,11 @@ func TestRunCaseReportsBothIncompleteRevisions(t *testing.T) {
 
 func TestBuildAndWriteBundleProducesDeterministicReviewArtifacts(t *testing.T) {
 	item := evaluationCase([]string{"compose.yaml"})
+	item.Kind = benchmark.CaseReal
+	item.ExpectedBoundary = ""
 	cache := materializeEvaluationCase(t, item, map[string][]byte{
-		item.BaseSHA: []byte("services:\n  web:\n    image: example/web:1\n"),
-		item.HeadSHA: []byte("services:\n  web:\n    image: example/web:1\n    ports:\n      - '127.0.0.1:8080:80'\n"),
+		item.BaseSHA: []byte(evaluationPeerCompose(false)),
+		item.HeadSHA: []byte(evaluationPeerCompose(true)),
 	})
 	corpus := benchmark.Corpus{SchemaVersion: 1, Cases: []benchmark.Case{item}}
 
@@ -117,29 +145,17 @@ func TestBuildAndWriteBundleProducesDeterministicReviewArtifacts(t *testing.T) {
 		t.Fatalf("second WriteBundle() error = %v", err)
 	}
 
-	firstResults, err := os.ReadFile(filepath.Join(firstOutput, "results.json"))
-	if err != nil {
-		t.Fatalf("read results: %v", err)
-	}
-	secondResults, err := os.ReadFile(filepath.Join(secondOutput, "results.json"))
-	if err != nil {
-		t.Fatalf("read second results: %v", err)
-	}
-	if string(firstResults) != string(secondResults) {
-		t.Fatalf("results differ:\n%s\n%s", firstResults, secondResults)
-	}
-	var results []review.Result
-	if err := json.Unmarshal(firstResults, &results); err != nil {
-		t.Fatalf("decode results: %v", err)
-	}
-	if len(results) != 1 || results[0].CaseID != item.ID {
-		t.Fatalf("results = %#v", results)
-	}
 	for _, relative := range []string{
+		"results.json",
 		"summary.json",
 		filepath.Join("reports", item.ID+".json"),
 		filepath.Join("reports", item.ID+".md"),
 	} {
+		first := mustReadFile(t, filepath.Join(firstOutput, relative))
+		second := mustReadFile(t, filepath.Join(secondOutput, relative))
+		if !bytes.Equal(first, second) {
+			t.Fatalf("%s differs between runs", relative)
+		}
 		info, err := os.Stat(filepath.Join(firstOutput, relative))
 		if err != nil {
 			t.Fatalf("stat %s: %v", relative, err)
@@ -148,9 +164,28 @@ func TestBuildAndWriteBundleProducesDeterministicReviewArtifacts(t *testing.T) {
 			t.Fatalf("mode(%s) = %v", relative, info.Mode())
 		}
 	}
-	if bundle.Summary.Cases != 1 || bundle.Summary.Findings != 1 || bundle.Summary.Rules["EM-COMPOSE-001"] != 1 {
+	var results []review.Result
+	if err := json.Unmarshal(mustReadFile(t, filepath.Join(firstOutput, "results.json")), &results); err != nil {
+		t.Fatalf("decode results: %v", err)
+	}
+	if len(results) != 1 || results[0].CaseID != item.ID || len(results[0].Findings) != 0 {
+		t.Fatalf("results = %#v", results)
+	}
+	if bundle.Summary.Changes != 1 || bundle.Summary.ChangeKinds["peer-path-added"] != 1 {
 		t.Fatalf("summary = %#v", bundle.Summary)
 	}
+	if bundle.Summary.Findings != 0 || len(bundle.Summary.Rules) != 0 {
+		t.Fatalf("summary = %#v", bundle.Summary)
+	}
+}
+
+func mustReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("os.ReadFile(%q) error = %v", path, err)
+	}
+	return content
 }
 
 type evaluationContentClient struct {
@@ -226,4 +261,18 @@ func materializeEvaluationCase(t *testing.T, item benchmark.Case, contentBySHA m
 		t.Fatalf("Materialize() error = %v", err)
 	}
 	return cache
+}
+
+func evaluationPeerCompose(includeDashboard bool) string {
+	contents := "services:\n" +
+		"  gateway:\n" +
+		"    image: example/gateway:1\n" +
+		"    ports: ['127.0.0.1:8080:80']\n" +
+		"    networks: [inbound]\n"
+	if includeDashboard {
+		contents += "  dashboard:\n" +
+			"    image: grafana/grafana:latest\n" +
+			"    networks: [inbound]\n"
+	}
+	return contents + "networks:\n  inbound: {}\n"
 }

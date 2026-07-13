@@ -41,8 +41,10 @@ type Summary struct {
 	Cases       int            `json:"cases"`
 	Complete    int            `json:"complete"`
 	Incomplete  int            `json:"incomplete"`
+	Changes     int            `json:"changes"`
 	Findings    int            `json:"findings"`
 	Kinds       map[string]int `json:"kinds"`
+	ChangeKinds map[string]int `json:"change_kinds"`
 	Diagnostics map[string]int `json:"diagnostics"`
 	Rules       map[string]int `json:"rules"`
 }
@@ -65,6 +67,7 @@ func Build(ctx context.Context, cache string, corpus benchmark.Corpus) (Bundle, 
 	})
 	bundle := Bundle{Summary: Summary{
 		Kinds:       make(map[string]int),
+		ChangeKinds: make(map[string]int),
 		Diagnostics: make(map[string]int),
 		Rules:       make(map[string]int),
 	}}
@@ -85,6 +88,10 @@ func Build(ctx context.Context, cache string, corpus benchmark.Corpus) (Bundle, 
 		}
 		for _, diagnostic := range outcome.Report.Analyzer.Diagnostics {
 			bundle.Summary.Diagnostics[diagnostic]++
+		}
+		for _, change := range outcome.Report.Analyzer.Changes {
+			bundle.Summary.Changes++
+			bundle.Summary.ChangeKinds[string(change.Kind)]++
 		}
 		for _, finding := range outcome.Report.Analyzer.Findings {
 			bundle.Summary.Findings++
