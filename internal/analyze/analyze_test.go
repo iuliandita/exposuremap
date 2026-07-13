@@ -8,11 +8,16 @@ import (
 	"github.com/iuliandita/exposuremap/internal/graph"
 )
 
-func TestCompareDetectsFourBoundaryRuleFamilies(t *testing.T) {
+func TestCompareDetectsFiveBoundaryRuleFamilies(t *testing.T) {
 	base := revision(
 		graph.Service{Name: "web", Bindings: []graph.Binding{{HostIP: "127.0.0.1", Published: "8080", Target: 80}}},
 		graph.Service{Name: "agent", Networks: []string{"default"}},
 		graph.Service{Name: "admin", Bindings: []graph.Binding{{HostIP: "127.0.0.1", Published: "9000", Target: 9000}}},
+		graph.Service{
+			Name:     "gateway",
+			Bindings: []graph.Binding{{HostIP: "127.0.0.1", Published: "7000", Target: 7000}},
+			Networks: []string{"backend"},
+		},
 	)
 	head := revision(
 		graph.Service{Name: "web", Bindings: []graph.Binding{
@@ -29,14 +34,24 @@ func TestCompareDetectsFourBoundaryRuleFamilies(t *testing.T) {
 				{Type: "bind", Source: "/var/run/docker.sock", Target: "/var/run/docker.sock"},
 			},
 		},
+		graph.Service{
+			Name:     "gateway",
+			Bindings: []graph.Binding{{HostIP: "127.0.0.1", Published: "7000", Target: 7000}},
+			Networks: []string{"backend"},
+		},
+		graph.Service{Name: "database", Image: "postgres:16-alpine", Networks: []string{"backend"}},
 	)
 
 	findings := analyze.Compare(base, head)
 	gotIDs := make([]string, 0, len(findings))
 	for _, finding := range findings {
 		gotIDs = append(gotIDs, finding.RuleID)
-		if finding.Confidence != "high" {
-			t.Errorf("finding %#v confidence = %q, want high", finding, finding.Confidence)
+		wantConfidence := "high"
+		if finding.RuleID == "EM-COMPOSE-005" {
+			wantConfidence = "medium"
+		}
+		if finding.Confidence != wantConfidence {
+			t.Errorf("finding %#v confidence = %q, want %q", finding, finding.Confidence, wantConfidence)
 		}
 	}
 	wantIDs := []string{
@@ -46,6 +61,7 @@ func TestCompareDetectsFourBoundaryRuleFamilies(t *testing.T) {
 		"EM-COMPOSE-004",
 		"EM-COMPOSE-004",
 		"EM-COMPOSE-004",
+		"EM-COMPOSE-005",
 	}
 	if !slices.Equal(gotIDs, wantIDs) {
 		t.Fatalf("rule IDs = %#v, want %#v; findings = %#v", gotIDs, wantIDs, findings)
@@ -64,6 +80,9 @@ func TestCompareDetectsFourBoundaryRuleFamilies(t *testing.T) {
 	}
 	if findings[4].Severity != "high" || findings[5].Evidence != "privileged: false -> true" {
 		t.Fatalf("high-risk findings = [%#v %#v]", findings[4], findings[5])
+	}
+	if findings[6].Service != "gateway" || findings[6].Severity != "high" {
+		t.Fatalf("data-service path finding = %#v", findings[6])
 	}
 }
 

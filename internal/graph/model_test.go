@@ -13,6 +13,7 @@ func TestNormalizeSortsAndClassifiesServices(t *testing.T) {
 		Services: []graph.Service{
 			{
 				Name:     "worker",
+				Image:    "registry.example/team/Postgres:16-alpine@sha256:abc",
 				Networks: []string{"queue", "backend", "queue"},
 				Mounts: []graph.Mount{
 					{Type: "bind", Source: "/var/run/docker.sock", Target: "/socket"},
@@ -51,6 +52,9 @@ func TestNormalizeSortsAndClassifiesServices(t *testing.T) {
 	if revision.Services[3].Reachability != graph.ReachabilityInternal {
 		t.Fatalf("worker reachability = %q, want internal", revision.Services[3].Reachability)
 	}
+	if got, want := revision.Services[3].Image, "registry.example/team/Postgres:16-alpine@sha256:abc"; got != want {
+		t.Fatalf("worker image = %q, want %q", got, want)
+	}
 
 	bindings := revision.Services[2].Bindings
 	if len(bindings) != 2 || bindings[0].Published != "8080" || bindings[0].Protocol != "tcp" || bindings[1].Protocol != "udp" {
@@ -67,13 +71,20 @@ func TestNormalizeSortsAndClassifiesServices(t *testing.T) {
 func TestNormalizeDoesNotMutateInput(t *testing.T) {
 	input := graph.Revision{Services: []graph.Service{{
 		Name:     "web",
+		Image:    "registry.example/team/Postgres:16-alpine@sha256:abc",
 		Networks: []string{"z", "a"},
 	}}}
 
-	_ = graph.Normalize(input)
+	normalized := graph.Normalize(input)
 
 	if !slices.Equal(input.Services[0].Networks, []string{"z", "a"}) {
 		t.Fatalf("Normalize mutated input networks: %#v", input.Services[0].Networks)
+	}
+	if got, want := input.Services[0].Image, "registry.example/team/Postgres:16-alpine@sha256:abc"; got != want {
+		t.Fatalf("Normalize mutated input image: %q, want %q", got, want)
+	}
+	if got, want := normalized.Services[0].Image, input.Services[0].Image; got != want {
+		t.Fatalf("normalized image = %q, want %q", got, want)
 	}
 }
 

@@ -2,6 +2,7 @@ package review_test
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -116,6 +117,91 @@ func TestScoreCountsAdjudicatedFalseFailure(t *testing.T) {
 	}
 }
 
+func TestScoreRequiresAdjudicationForSampledCaseWithoutFindings(t *testing.T) {
+	corpus, results, assessments := exactGateFixture()
+	assessments = slices.DeleteFunc(assessments, func(assessment review.Assessment) bool {
+		return assessment.CaseID == "case-20" && assessment.Role == review.RoleAdjudicator
+	})
+
+	_, err := review.Score(corpus, results, assessments)
+	if err == nil || !strings.Contains(err.Error(), "case-20 requires adjudication") {
+		t.Fatalf("Score() error = %v, want sampled-case adjudication requirement", err)
+	}
+}
+
+func TestScoreAllowsOnlyAdjudicatorForSampledCaseWithoutFindings(t *testing.T) {
+	corpus, results, assessments := exactGateFixture()
+
+	report, err := review.Score(corpus, results, assessments)
+	if err != nil {
+		t.Fatalf("Score() error = %v", err)
+	}
+	if !report.Passed || report.MissedChanges != 0 {
+		t.Fatalf("Score() report = %#v, want passing with no missed changes", report)
+	}
+	assertRatio(t, "warning precision", report.WarningPrecision, 19, 20)
+	assertRatio(t, "usefulness", report.UsefulnessAgreement, 8, 10)
+}
+
+func TestScoreBlocksAdjudicatedMissedChange(t *testing.T) {
+	corpus, results, assessments := exactGateFixture()
+	for index := range assessments {
+		if assessments[index].CaseID == "case-20" && assessments[index].Role == review.RoleAdjudicator {
+			assessments[index].MissedChange = true
+		}
+	}
+
+	report, err := review.Score(corpus, results, assessments)
+	if err != nil {
+		t.Fatalf("Score() error = %v", err)
+	}
+	if report.MissedChanges != 1 || report.Passed ||
+		!containsReason(report.BlockingReasons, "one or more adjudicated meaningful changes were missed") {
+		t.Fatalf("Score() report = %#v, want one blocking missed change", report)
+	}
+}
+
+func TestScoreBlocksSuppliedNonsampledAdjudicatorMiss(t *testing.T) {
+	corpus, results, assessments := exactGateFixture()
+	assessments = append(assessments, review.Assessment{
+		SchemaVersion: 1,
+		CaseID:        "case-11",
+		Reviewer:      "owner",
+		Role:          review.RoleAdjudicator,
+		MissedChange:  true,
+	})
+
+	report, err := review.Score(corpus, results, assessments)
+	if err != nil {
+		t.Fatalf("Score() error = %v", err)
+	}
+	if report.MissedChanges != 1 || report.Passed {
+		t.Fatalf("Score() report = %#v, want supplied miss to block", report)
+	}
+}
+
+func TestScoreStillRequiresPrimaryAndSecondaryForFindingCase(t *testing.T) {
+	corpus, results, assessments := exactGateFixture()
+	assessments = slices.DeleteFunc(assessments, func(assessment review.Assessment) bool {
+		return assessment.CaseID == "case-01" && assessment.Role == review.RoleSecondary
+	})
+	assessments = append(assessments, review.Assessment{
+		SchemaVersion: 1,
+		CaseID:        "case-01",
+		Reviewer:      "owner",
+		Role:          review.RoleAdjudicator,
+		FindingReviews: []review.FindingReview{
+			{FindingID: "case-01-warning-1", Correct: true, SeverityJustified: true},
+			{FindingID: "case-01-warning-2", Correct: true, SeverityJustified: true},
+		},
+	})
+
+	_, err := review.Score(corpus, results, assessments)
+	if err == nil || !strings.Contains(err.Error(), "case-01 requires primary and secondary assessments") {
+		t.Fatalf("Score() error = %v, want primary/secondary requirement", err)
+	}
+}
+
 func TestScoreBlocksValuesBelowThresholds(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -202,6 +288,7 @@ func exactGateFixture() (benchmark.Corpus, []review.Result, []review.Assessment)
 			Status:          review.StatusIncomplete,
 			EngineVersion:   "v0.1.0-test",
 			RulePackVersion: "v0.1.0-test",
+			SampledForHuman: (index+1)%10 == 0,
 		}
 		if index < 14 {
 			result.Status = review.StatusComplete
@@ -237,6 +324,26 @@ func exactGateFixture() (benchmark.Corpus, []review.Result, []review.Assessment)
 					},
 				})
 			}
+		}
+		if result.SampledForHuman {
+			assessment := review.Assessment{
+				SchemaVersion:       1,
+				CaseID:              caseID,
+				Reviewer:            "owner",
+				Role:                review.RoleAdjudicator,
+				FactuallyCorrect:    true,
+				SeverityJustified:   true,
+				UsefulBeyondRawDiff: index < 8,
+			}
+			for _, finding := range result.Findings {
+				correct := !strings.HasSuffix(finding.ID, "warning-2") || index != 9
+				assessment.FindingReviews = append(assessment.FindingReviews, review.FindingReview{
+					FindingID:         finding.ID,
+					Correct:           correct,
+					SeverityJustified: true,
+				})
+			}
+			assessments = append(assessments, assessment)
 		}
 		results = append(results, result)
 	}

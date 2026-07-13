@@ -106,11 +106,19 @@ func Score(corpus benchmark.Corpus, results []Result, assessments []Assessment) 
 				report.MutationRecall.Numerator++
 			}
 		}
+		roles := assessmentsByCase[item.ID]
+		adjudicator, hasAdjudicator := roles[RoleAdjudicator]
+		if result.SampledForHuman && !hasAdjudicator {
+			errorsFound = append(errorsFound, fmt.Sprintf("case %s requires adjudication", item.ID))
+			continue
+		}
+		if hasAdjudicator && adjudicator.MissedChange {
+			report.MissedChanges++
+		}
 		if len(result.Findings) == 0 {
 			continue
 		}
 
-		roles := assessmentsByCase[item.ID]
 		primary, primaryExists := roles[RolePrimary]
 		secondary, secondaryExists := roles[RoleSecondary]
 		if !primaryExists || !secondaryExists {
@@ -122,7 +130,6 @@ func Score(corpus benchmark.Corpus, results []Result, assessments []Assessment) 
 			continue
 		}
 
-		adjudicator, hasAdjudicator := roles[RoleAdjudicator]
 		requiresAdjudication := result.ProposedFailure || result.SampledForHuman || hasFailure(result.Findings) || disagree(primary, secondary)
 		if requiresAdjudication && !hasAdjudicator {
 			errorsFound = append(errorsFound, fmt.Sprintf("case %s requires adjudication", item.ID))
@@ -171,6 +178,9 @@ func Score(corpus benchmark.Corpus, results []Result, assessments []Assessment) 
 	}
 	if report.FalseFailures != 0 {
 		report.BlockingReasons = append(report.BlockingReasons, "one or more false CI failures remain")
+	}
+	if report.MissedChanges != 0 {
+		report.BlockingReasons = append(report.BlockingReasons, "one or more adjudicated meaningful changes were missed")
 	}
 	report.Passed = len(report.BlockingReasons) == 0
 	return report, nil

@@ -301,7 +301,7 @@ func TestBenchmarkRunCommandWritesEvaluationBundle(t *testing.T) {
 	}
 }
 
-func TestBenchmarkMutateCommandWritesFourRuleBundle(t *testing.T) {
+func TestBenchmarkMutateCommandWritesFiveRuleBundle(t *testing.T) {
 	directory := t.TempDir()
 	corpus := oneCaseCorpus()
 	corpusPath := filepath.Join(directory, "corpus.json")
@@ -326,12 +326,12 @@ func TestBenchmarkMutateCommandWritesFourRuleBundle(t *testing.T) {
 		"--count-per-rule", "1",
 	}, &stdout, &stderr)
 
-	if code != 0 || stderr.Len() != 0 || !strings.Contains(stdout.String(), `"cases": 4`) {
+	if code != 0 || stderr.Len() != 0 || !strings.Contains(stdout.String(), `"cases": 5`) {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 	var mutations benchmark.Corpus
 	readJSON(t, filepath.Join(outputPath, "corpus.json"), &mutations)
-	if len(mutations.Cases) != 4 {
+	if len(mutations.Cases) != 5 {
 		t.Fatalf("mutations = %#v", mutations)
 	}
 }

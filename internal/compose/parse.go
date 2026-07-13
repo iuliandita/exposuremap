@@ -19,7 +19,7 @@ import (
 
 const maxComposeBytes = 1 << 20
 
-var boundaryFields = []string{"ports", "networks", "volumes", "privileged", "network_mode"}
+var boundaryFields = []string{"image", "ports", "networks", "volumes", "privileged", "network_mode"}
 
 // IncompleteError means the input could not be represented safely and completely.
 type IncompleteError struct {
@@ -80,6 +80,7 @@ func ParseFile(ctx context.Context, filePath string) (graph.Revision, error) {
 		service := project.Services[serviceName]
 		normalized := graph.Service{
 			Name:        serviceName,
+			Image:       service.Image,
 			Privileged:  service.Privileged,
 			HostNetwork: service.NetworkMode == "host",
 		}

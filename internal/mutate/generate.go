@@ -32,6 +32,7 @@ var ruleIDs = []string{
 	"EM-COMPOSE-002",
 	"EM-COMPOSE-003",
 	"EM-COMPOSE-004",
+	"EM-COMPOSE-005",
 }
 
 // Case contains the local bytes and manifest for one controlled mutation.
@@ -53,6 +54,12 @@ type source struct {
 	item    benchmark.Case
 	path    string
 	content []byte
+}
+
+type serviceMutation struct {
+	suffix string
+	base   *yaml.Node
+	head   *yaml.Node
 }
 
 // Generate derives countPerRule isolated mutations from complete training cases.
@@ -163,14 +170,30 @@ func mutateDocument(content []byte, serviceName, ruleID string, ordinal int) ([]
 	if err != nil {
 		return nil, nil, err
 	}
-	serviceName = collisionFreeServiceName(baseServices, headServices, serviceName)
+	networkName := ""
+	if ruleID == "EM-COMPOSE-005" {
+		baseNetworks, err := documentMapping(&base, "networks", true)
+		if err != nil {
+			return nil, nil, err
+		}
+		headNetworks, err := documentMapping(&head, "networks", true)
+		if err != nil {
+			return nil, nil, err
+		}
+		networkName = collisionFreeMappingName(baseNetworks, headNetworks, serviceName+"_network")
+		appendMapping(baseNetworks, scalar(networkName), mapping())
+		appendMapping(headNetworks, scalar(networkName), mapping())
+	}
 	port := 41000 + ordinal
-	baseService, headService, err := mutationServices(ruleID, port, ordinal)
+	services, err := mutationServices(ruleID, port, ordinal, networkName)
 	if err != nil {
 		return nil, nil, err
 	}
-	appendMapping(baseServices, scalar(serviceName), baseService)
-	appendMapping(headServices, scalar(serviceName), headService)
+	for _, service := range services {
+		name := collisionFreeMappingName(baseServices, headServices, serviceName+service.suffix)
+		appendMapping(baseServices, scalar(name), service.base)
+		appendMapping(headServices, scalar(name), service.head)
+	}
 	baseBytes, err := encodeDocument(&base)
 	if err != nil {
 		return nil, nil, err
@@ -182,21 +205,30 @@ func mutateDocument(content []byte, serviceName, ruleID string, ordinal int) ([]
 	return baseBytes, headBytes, nil
 }
 
-func mutationServices(ruleID string, port, ordinal int) (*yaml.Node, *yaml.Node, error) {
+func mutationServices(ruleID string, port, ordinal int, networkName string) ([]serviceMutation, error) {
 	image := field("image", scalar("scratch"))
 	loopbackPort := fmt.Sprintf("127.0.0.1:%d:8080", port)
 	wildcardPort := fmt.Sprintf("0.0.0.0:%d:8080", port)
 	switch ruleID {
 	case "EM-COMPOSE-001":
-		return mapping(image...), mapping(append(image, field("ports", sequence(scalar(wildcardPort)))...)...), nil
+		baseFields := append(slices.Clone(image), field("network_mode", scalar("none"))...)
+		headFields := append(slices.Clone(baseFields), field("ports", sequence(scalar(wildcardPort)))...)
+		return []serviceMutation{{
+			base: mapping(baseFields...),
+			head: mapping(headFields...),
+		}}, nil
 	case "EM-COMPOSE-002":
-		base := mapping(append(image, field("ports", sequence(scalar(loopbackPort)))...)...)
-		head := mapping(append(image, field("ports", sequence(scalar(wildcardPort)))...)...)
-		return base, head, nil
+		return []serviceMutation{{
+			base: mapping(append(slices.Clone(image), field("ports", sequence(scalar(loopbackPort)))...)...),
+			head: mapping(append(slices.Clone(image), field("ports", sequence(scalar(wildcardPort)))...)...),
+		}}, nil
 	case "EM-COMPOSE-003":
-		return mapping(image...), mapping(append(image, field("network_mode", scalar("host"))...)...), nil
+		return []serviceMutation{{
+			base: mapping(image...),
+			head: mapping(append(slices.Clone(image), field("network_mode", scalar("host"))...)...),
+		}}, nil
 	case "EM-COMPOSE-004":
-		baseFields := append(image, field("ports", sequence(scalar(loopbackPort)))...)
+		baseFields := append(slices.Clone(image), field("ports", sequence(scalar(loopbackPort)))...)
 		headFields := slices.Clone(baseFields)
 		if ordinal%2 == 1 {
 			headFields = append(headFields, field("privileged", boolean(true))...)
@@ -206,9 +238,21 @@ func mutationServices(ruleID string, port, ordinal int) (*yaml.Node, *yaml.Node,
 				sequence(scalar("/var/run/docker.sock:/var/run/docker.sock:ro")),
 			)...)
 		}
-		return mapping(baseFields...), mapping(headFields...), nil
+		return []serviceMutation{{base: mapping(baseFields...), head: mapping(headFields...)}}, nil
+	case "EM-COMPOSE-005":
+		sourceFields := append(slices.Clone(image), field("ports", sequence(scalar(loopbackPort)))...)
+		baseSourceFields := append(slices.Clone(sourceFields), field("network_mode", scalar("none"))...)
+		headSourceFields := append(slices.Clone(sourceFields), field("networks", sequence(scalar(networkName)))...)
+		targetFields := append(
+			field("image", scalar("postgres:16-alpine")),
+			field("networks", sequence(scalar(networkName)))...,
+		)
+		return []serviceMutation{
+			{base: mapping(baseSourceFields...), head: mapping(headSourceFields...)},
+			{suffix: "_target", base: mapping(targetFields...), head: mapping(slices.Clone(targetFields)...)},
+		}, nil
 	default:
-		return nil, nil, fmt.Errorf("unsupported mutation rule %s", ruleID)
+		return nil, fmt.Errorf("unsupported mutation rule %s", ruleID)
 	}
 }
 
@@ -287,21 +331,30 @@ func encodeDocument(document *yaml.Node) ([]byte, error) {
 }
 
 func servicesMapping(document *yaml.Node) (*yaml.Node, error) {
+	return documentMapping(document, "services", false)
+}
+
+func documentMapping(document *yaml.Node, fieldName string, create bool) (*yaml.Node, error) {
 	if document.Kind != yaml.DocumentNode || len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("Compose YAML root is not a mapping")
 	}
 	root := document.Content[0]
 	for index := 0; index+1 < len(root.Content); index += 2 {
-		if root.Content[index].Value != "services" {
+		if root.Content[index].Value != fieldName {
 			continue
 		}
-		services := root.Content[index+1]
-		if services.Kind != yaml.MappingNode {
-			return nil, fmt.Errorf("Compose services is not a mapping")
+		value := root.Content[index+1]
+		if value.Kind != yaml.MappingNode {
+			return nil, fmt.Errorf("Compose %s is not a mapping", fieldName)
 		}
-		return services, nil
+		return value, nil
 	}
-	return nil, fmt.Errorf("Compose services mapping is missing")
+	if !create {
+		return nil, fmt.Errorf("Compose %s mapping is missing", fieldName)
+	}
+	value := mapping()
+	appendMapping(root, scalar(fieldName), value)
+	return value, nil
 }
 
 func mappingHasKey(mapping *yaml.Node, key string) bool {
@@ -313,7 +366,7 @@ func mappingHasKey(mapping *yaml.Node, key string) bool {
 	return false
 }
 
-func collisionFreeServiceName(base, head *yaml.Node, requested string) string {
+func collisionFreeMappingName(base, head *yaml.Node, requested string) string {
 	if !mappingHasKey(base, requested) && !mappingHasKey(head, requested) {
 		return requested
 	}

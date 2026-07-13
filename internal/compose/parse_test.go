@@ -26,6 +26,9 @@ func TestParseFileNormalizesSupportedBoundaryFacts(t *testing.T) {
 	}
 
 	database := serviceNamed(t, revision, "database")
+	if database.Image != "postgres:18" {
+		t.Fatalf("database image = %q, want postgres:18", database.Image)
+	}
 	if !slices.Equal(database.Networks, []string{"default"}) || database.Reachability != graph.ReachabilityInternal {
 		t.Fatalf("database = %#v, want implicit internal default network", database)
 	}
@@ -177,6 +180,18 @@ func TestParseFileRejectsUnresolvedBoundaryInterpolation(t *testing.T) {
 			contents:   "services:\n  web:\n    image: nginx\n    privileged: ${PRIVILEGED}\n",
 			diagnostic: "parse compose file: unresolved boundary interpolation in services.web.privileged",
 		},
+		"image": {
+			contents:   "services:\n  web:\n    image: ${IMAGE}\n",
+			diagnostic: "parse compose file: unresolved boundary interpolation in services.web.image",
+		},
+		"required image": {
+			contents:   "services:\n  web:\n    image: ${IMAGE:?required}\n",
+			diagnostic: "parse compose file: unresolved boundary interpolation in services.web.image",
+		},
+		"nested image default": {
+			contents:   "services:\n  web:\n    image: ${IMAGE:-registry/${TENANT}/postgres:16}\n",
+			diagnostic: "parse compose file: unresolved boundary interpolation in services.web.image",
+		},
 		"nested volume default": {
 			contents: "services:\n  web:\n    image: nginx\n    volumes:\n" +
 				"      - ${SOURCE:-/srv/${TENANT}}:/data\n",
@@ -228,7 +243,7 @@ func TestParseFileResolvesInlineBoundaryDefaults(t *testing.T) {
 	path := writeCompose(t, t.TempDir(), "compose.yaml", `
 services:
   web:
-    image: nginx
+    image: ${IMAGE:-postgres:16-alpine}
     ports:
       - ${PUBLISHED:-8080}:80
     volumes:
@@ -240,6 +255,9 @@ services:
 		t.Fatalf("ParseFile() error = %v", err)
 	}
 	web := serviceNamed(t, revision, "web")
+	if web.Image != "postgres:16-alpine" {
+		t.Fatalf("image = %q, want inline image default", web.Image)
+	}
 	if len(web.Bindings) != 1 || web.Bindings[0].Published != "8080" {
 		t.Fatalf("bindings = %#v, want inline published-port default", web.Bindings)
 	}
@@ -248,11 +266,27 @@ services:
 	}
 }
 
+func TestParseFileAllowsEscapedDollarInImage(t *testing.T) {
+	path := writeCompose(t, t.TempDir(), "compose.yaml", `
+services:
+  web:
+    image: $$DATABASE_IMAGE
+`)
+
+	revision, err := composeparser.ParseFile(context.Background(), path)
+	if err != nil {
+		t.Fatalf("ParseFile() error = %v", err)
+	}
+	if got, want := serviceNamed(t, revision, "web").Image, "$DATABASE_IMAGE"; got != want {
+		t.Fatalf("image = %q, want %q", got, want)
+	}
+}
+
 func TestParseFileAllowsUnresolvedNonBoundaryInterpolation(t *testing.T) {
 	path := writeCompose(t, t.TempDir(), "compose.yaml", `
 services:
   web:
-    image: nginx-${TAG}
+    image: nginx
     command: ["sh", "-c", "echo ${MESSAGE}"]
     environment:
       VALUE: ${VALUE}

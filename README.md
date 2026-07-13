@@ -21,14 +21,17 @@ ExposureMap will not call a service Internet-accessible unless explicit project 
 
 ## Current analyzer slice
 
-The current CLI accepts one regular Compose file for each revision. It normalizes services, published ports, Compose networks, bind mounts, privileged mode, and host network mode with the reference `compose-go` loader.
+The current CLI accepts one regular Compose file for each revision. It normalizes services, resolved image references, published ports, Compose networks, bind mounts, privileged mode, and host network mode with the reference `compose-go` loader.
 
-It reports four deterministic change families:
+It reports five deterministic change families:
 
 - `EM-COMPOSE-001`: new host port.
 - `EM-COMPOSE-002`: loopback binding widened to a wildcard address.
 - `EM-COMPOSE-003`: host network mode introduced.
 - `EM-COMPOSE-004`: a host-exposed service becomes privileged or gains a sensitive bind mount.
+- `EM-COMPOSE-005`: a host-exposed service gains a new shared-network path to an internal service whose exact image basename is on the conservative data-service allowlist.
+
+Rule 005 is a medium-confidence warning based only on exact image basenames. It does not claim Internet accessibility, exploitability, missing authentication, or a vulnerability in the target image.
 
 Run a comparison as JSON:
 
@@ -52,7 +55,7 @@ Compose overrides, includes, extends, profiles, label files, Dockerfiles, proxy 
 - Independent primary/secondary review with required human adjudication.
 - Exact technical gates for completeness, resolution, precision, usefulness, and false CI failures.
 - Immutable case materialization with upstream blob SHAs, local SHA-256 checksums, and bounded private cache files.
-- A deterministic graph, four Compose boundary rules, and stable JSON/Markdown reports.
+- A deterministic graph, five Compose boundary rules, and stable JSON/Markdown reports.
 - Atomic benchmark run bundles with scorer-compatible results and per-case review reports.
 - Deterministic training-derived mutations for each implemented rule.
 
