@@ -1,6 +1,7 @@
 package analyze
 
 import (
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -43,7 +44,7 @@ func TestCompareDetectsNewDataServicePath(t *testing.T) {
 		graph.Service{Name: "db", Image: "postgres:16-alpine", Networks: []string{"backend"}},
 	)
 
-	findings := Compare(base, head)
+	findings := Compare(base, head).Findings
 	if len(findings) != 1 {
 		t.Fatalf("findings = %#v, want one", findings)
 	}
@@ -71,7 +72,7 @@ func TestCompareDetectsDataServicePathFromNewlyExposedSource(t *testing.T) {
 	)
 	head := normalizedRevision(exposedService("web", "backend"), target)
 
-	findings := findingsForRule(Compare(base, head), "EM-COMPOSE-005")
+	findings := findingsForRule(Compare(base, head).Findings, "EM-COMPOSE-005")
 	if len(findings) != 1 {
 		t.Fatalf("rule 005 findings = %#v, want one", findings)
 	}
@@ -104,7 +105,7 @@ func TestCompareDoesNotTreatDuplicateServicesAsPureRenames(t *testing.T) {
 
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			findings := findingsForRule(Compare(test.base, test.head), "EM-COMPOSE-005")
+			findings := findingsForRule(Compare(test.base, test.head).Findings, "EM-COMPOSE-005")
 			if len(findings) != 1 || findings[0].Evidence != test.want {
 				t.Fatalf("rule 005 findings = %#v, want evidence %q", findings, test.want)
 			}
@@ -167,7 +168,7 @@ func TestCompareIgnoresNonWideningDataServicePaths(t *testing.T) {
 
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			if findings := findingsForRule(Compare(test.base, test.head), "EM-COMPOSE-005"); len(findings) != 0 {
+			if findings := findingsForRule(Compare(test.base, test.head).Findings, "EM-COMPOSE-005"); len(findings) != 0 {
 				t.Fatalf("rule 005 findings = %#v, want none", findings)
 			}
 		})
@@ -183,7 +184,7 @@ func TestCompareSortsDataServicePathsAndSelectsFirstNetwork(t *testing.T) {
 		graph.Service{Name: "a-db", Image: "postgres:16", Networks: []string{"zeta", "alpha"}},
 	)
 
-	findings := findingsForRule(Compare(base, head), "EM-COMPOSE-005")
+	findings := findingsForRule(Compare(base, head).Findings, "EM-COMPOSE-005")
 	if len(findings) != 2 {
 		t.Fatalf("findings = %#v, want two", findings)
 	}
@@ -194,6 +195,26 @@ func TestCompareSortsDataServicePathsAndSelectsFirstNetwork(t *testing.T) {
 	got := []string{findings[0].Evidence, findings[1].Evidence}
 	if !slices.Equal(got, want) {
 		t.Fatalf("evidence = %#v, want %#v", got, want)
+	}
+}
+
+func TestPureServiceRenamesRequiresUniqueBoundaryFacts(t *testing.T) {
+	uniqueBase := normalizedRevision(exposedService("old-web", "backend"))
+	uniqueHead := normalizedRevision(exposedService("web", "backend"))
+	if got := pureServiceRenames(uniqueBase, uniqueHead); !maps.Equal(got, map[string]string{"old-web": "web"}) {
+		t.Fatalf("unique renames = %#v", got)
+	}
+
+	ambiguousBase := normalizedRevision(
+		exposedService("old-a", "backend"),
+		exposedService("old-b", "backend"),
+	)
+	ambiguousHead := normalizedRevision(
+		exposedService("new-a", "backend"),
+		exposedService("new-b", "backend"),
+	)
+	if got := pureServiceRenames(ambiguousBase, ambiguousHead); len(got) != 0 {
+		t.Fatalf("ambiguous renames = %#v, want none", got)
 	}
 }
 

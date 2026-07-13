@@ -223,8 +223,9 @@ func mutationServices(ruleID string, port, ordinal int, networkName string) ([]s
 			head: mapping(append(slices.Clone(image), field("ports", sequence(scalar(wildcardPort)))...)...),
 		}}, nil
 	case "EM-COMPOSE-003":
+		baseFields := append(slices.Clone(image), field("network_mode", scalar("none"))...)
 		return []serviceMutation{{
-			base: mapping(image...),
+			base: mapping(baseFields...),
 			head: mapping(append(slices.Clone(image), field("network_mode", scalar("host"))...)...),
 		}}, nil
 	case "EM-COMPOSE-004":

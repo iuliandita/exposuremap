@@ -89,7 +89,7 @@ go run ./cmd/exposuremap benchmark run \
   --out docs/local/evaluation/run-1
 ```
 
-The bundle contains `results.json`, `summary.json`, and JSON/Markdown reports under `reports/`. Existing output directories are never overwritten. Cases with zero or multiple Compose paths are recorded as `incomplete`; cache-integrity failures stop the run.
+The bundle contains `results.json`, `summary.json`, and JSON/Markdown reports under `reports/`. `summary.json` includes total informational changes and counts by change kind. `results.json` remains warning- and scorer-only; informational changes stay in analyzer reports and never become scorer findings. Existing output directories are never overwritten. Cases with zero or multiple Compose paths are recorded as `incomplete`; cache-integrity failures stop the run.
 
 ## Controlled mutations
 
@@ -103,7 +103,9 @@ go run ./cmd/exposuremap benchmark mutate \
   --count-per-rule 5
 ```
 
-The generated directory contains its own `corpus.json` and checksum-verifiable `cases/` cache. Mutations append one isolated synthetic service to a real training Compose document and never execute the source. The four current mutation families cover a new wildcard host port, loopback-to-wildcard widening, host networking, and privileged or Docker-socket access on a host-exposed service.
+The generated directory contains its own `corpus.json` and checksum-verifiable `cases/` cache. Mutations append isolated synthetic configuration to a real training Compose document and never execute the source. The five warning families cover a new wildcard host port, loopback-to-wildcard widening, host networking, privileged or Docker-socket access on a host-exposed service, and a new path from a host-exposed source to a recognized data service.
+
+For a 20-per-rule `compose-v3` bundle, the 20 rule 005 mutations each emit one informational `peer-path-added` change. The other 80 controlled warnings remain peer-change-free. Informational changes do not affect warning detection, mutation recall, or proposed-failure behavior.
 
 `--count-per-rule` must be between 1 and 100.
 

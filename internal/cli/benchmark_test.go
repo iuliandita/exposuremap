@@ -271,11 +271,11 @@ func TestBenchmarkRunCommandWritesEvaluationBundle(t *testing.T) {
 	client := &cliContentClient{files: map[string]githubapi.File{
 		corpus.Cases[0].BaseSHA: {
 			BlobSHA: "base-blob",
-			Content: []byte("services:\n  web:\n    image: example/web:1\n"),
+			Content: []byte(benchmarkPeerCompose(false)),
 		},
 		corpus.Cases[0].HeadSHA: {
 			BlobSHA: "head-blob",
-			Content: []byte("services:\n  web:\n    image: example/web:1\n    ports: ['127.0.0.1:8080:80']\n"),
+			Content: []byte(benchmarkPeerCompose(true)),
 		},
 	}}
 	if _, err := benchmark.Materialize(context.Background(), client, corpus, cachePath); err != nil {
@@ -291,12 +291,19 @@ func TestBenchmarkRunCommandWritesEvaluationBundle(t *testing.T) {
 		"--out", outputPath,
 	}, &stdout, &stderr)
 
-	if code != 0 || stderr.Len() != 0 || !strings.Contains(stdout.String(), `"cases": 1`) {
-		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	for _, want := range []string{
+		`"cases": 1`,
+		`"changes": 1`,
+		`"change_kinds": {`,
+		`"peer-path-added": 1`,
+	} {
+		if code != 0 || stderr.Len() != 0 || !strings.Contains(stdout.String(), want) {
+			t.Fatalf("code=%d stdout missing %q: %q stderr=%q", code, want, stdout.String(), stderr.String())
+		}
 	}
 	var results []review.Result
 	readJSON(t, filepath.Join(outputPath, "results.json"), &results)
-	if len(results) != 1 || results[0].CaseID != corpus.Cases[0].ID || len(results[0].Findings) != 1 {
+	if len(results) != 1 || results[0].CaseID != corpus.Cases[0].ID || len(results[0].Findings) != 0 {
 		t.Fatalf("results = %#v", results)
 	}
 }
@@ -353,6 +360,20 @@ func oneCaseCorpus() benchmark.Corpus {
 			Paths:       []string{"compose.yaml"},
 		}},
 	}
+}
+
+func benchmarkPeerCompose(includeDashboard bool) string {
+	contents := "services:\n" +
+		"  gateway:\n" +
+		"    image: example/gateway:1\n" +
+		"    ports: ['127.0.0.1:8080:80']\n" +
+		"    networks: [inbound]\n"
+	if includeDashboard {
+		contents += "  dashboard:\n" +
+			"    image: grafana/grafana:latest\n" +
+			"    networks: [inbound]\n"
+	}
+	return contents + "networks:\n  inbound: {}\n"
 }
 
 func writeJSON(t *testing.T, path string, value any) {

@@ -11,7 +11,7 @@ import (
 
 const (
 	// RulePackVersion identifies the deterministic Compose boundary rules.
-	RulePackVersion = "compose-v2"
+	RulePackVersion = "compose-v3"
 
 	ruleNewHostPort   = "EM-COMPOSE-001"
 	ruleBindWidened   = "EM-COMPOSE-002"
@@ -20,8 +20,17 @@ const (
 	ruleDataService   = "EM-COMPOSE-005"
 )
 
-// Compare reports widening changes from base to head.
-func Compare(base, head graph.Revision) []report.Finding {
+// Analysis separates informational graph changes from warning findings.
+type Analysis struct {
+	Changes  []report.Change
+	Findings []report.Finding
+}
+
+// Compare returns informational changes and warning findings from base to head.
+func Compare(base, head graph.Revision) Analysis {
+	if !base.Complete || !head.Complete {
+		return Analysis{Changes: []report.Change{}, Findings: []report.Finding{}}
+	}
 	baseServices := serviceIndex(base)
 	baseExposures := hostExposureSet(base)
 	headExposures := hostExposureSet(head)
@@ -47,7 +56,10 @@ func Compare(base, head graph.Revision) []report.Finding {
 		}
 	}
 	findings = append(findings, compareDataServicePaths(base, head)...)
-	return report.SortFindings(findings)
+	return Analysis{
+		Changes:  comparePeerPaths(base, head),
+		Findings: report.SortFindings(findings),
+	}
 }
 
 func compareBindings(

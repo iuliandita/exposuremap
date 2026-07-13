@@ -8,7 +8,7 @@ import (
 
 const (
 	// SchemaVersion is the public report schema emitted by this prototype.
-	SchemaVersion = 1
+	SchemaVersion = 2
 	// AnalyzerVersion remains explicit so benchmark runs cannot mix engines silently.
 	AnalyzerVersion = "dev"
 )
@@ -35,7 +35,26 @@ type Report struct {
 	Base            Source    `json:"base"`
 	Head            Source    `json:"head"`
 	Diagnostics     []string  `json:"diagnostics,omitempty"`
+	Changes         []Change  `json:"changes"`
 	Findings        []Finding `json:"findings"`
+}
+
+// ChangeKind identifies one informational graph delta.
+type ChangeKind string
+
+const (
+	ChangePeerPathAdded   ChangeKind = "peer-path-added"
+	ChangePeerPathRemoved ChangeKind = "peer-path-removed"
+)
+
+// Change describes one informational difference between revisions.
+type Change struct {
+	Kind    ChangeKind `json:"kind"`
+	Source  string     `json:"source"`
+	Network string     `json:"network"`
+	Target  string     `json:"target"`
+	Base    string     `json:"base"`
+	Head    string     `json:"head"`
 }
 
 // Finding describes one observed boundary change.
@@ -66,8 +85,29 @@ func SortFindings(findings []Finding) []Finding {
 	return result
 }
 
+// SortChanges returns a sorted copy suitable for stable rendering.
+func SortChanges(changes []Change) []Change {
+	result := slices.Clone(changes)
+	slices.SortFunc(result, func(left, right Change) int {
+		if value := cmp.Compare(left.Kind, right.Kind); value != 0 {
+			return value
+		}
+		if value := cmp.Compare(left.Source, right.Source); value != 0 {
+			return value
+		}
+		if value := cmp.Compare(left.Target, right.Target); value != 0 {
+			return value
+		}
+		return cmp.Compare(left.Network, right.Network)
+	})
+	return result
+}
+
 // Complete creates a warning-only report for two fully parsed revisions.
-func Complete(findings []Finding) Report {
+func Complete(changes []Change, findings []Finding) Report {
+	if changes == nil {
+		changes = []Change{}
+	}
 	if findings == nil {
 		findings = []Finding{}
 	}
@@ -78,6 +118,7 @@ func Complete(findings []Finding) Report {
 		Complete:        true,
 		Base:            Source{Label: "base"},
 		Head:            Source{Label: "head"},
+		Changes:         SortChanges(changes),
 		Findings:        SortFindings(findings),
 	}
 }
@@ -94,6 +135,7 @@ func Incomplete(diagnostics ...string) Report {
 		Base:            Source{Label: "base"},
 		Head:            Source{Label: "head"},
 		Diagnostics:     diagnostics,
+		Changes:         []Change{},
 		Findings:        []Finding{},
 	}
 }

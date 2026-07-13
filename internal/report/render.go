@@ -28,6 +28,7 @@ func RenderMarkdown(writer io.Writer, value Report) error {
 		analysis = "complete"
 	}
 	fmt.Fprintf(&output, "Analysis: %s\n\n", analysis)
+	fmt.Fprintf(&output, "Changes: %d\n", len(value.Changes))
 	fmt.Fprintf(&output, "Findings: %d\n", len(value.Findings))
 
 	if len(value.Diagnostics) > 0 {
@@ -38,11 +39,31 @@ func RenderMarkdown(writer io.Writer, value Report) error {
 		fmt.Fprintln(&output)
 	}
 
+	fmt.Fprintln(&output, "\n## Changes")
+	fmt.Fprintln(&output)
+	switch {
+	case !value.Complete:
+		fmt.Fprintln(&output, "No changes were evaluated because analysis is incomplete.")
+	case len(value.Changes) == 0:
+		fmt.Fprintln(&output, "No observed peer-path changes.")
+	default:
+		for _, change := range value.Changes {
+			fmt.Fprintf(
+				&output,
+				"- `%s`: `%s -> %s -> %s`\n",
+				inlineCode(string(change.Kind)),
+				inlineCode(change.Source),
+				inlineCode(change.Network),
+				inlineCode(change.Target),
+			)
+		}
+	}
+
 	if len(value.Findings) == 0 {
 		fmt.Fprintln(&output, "\n## Findings")
 		fmt.Fprintln(&output)
 		if value.Complete {
-			fmt.Fprintln(&output, "No boundary widening was detected within observed inputs.")
+			fmt.Fprintln(&output, "No warning-level boundary widening was detected within observed inputs.")
 		} else {
 			fmt.Fprintln(&output, "No findings were evaluated because analysis is incomplete.")
 		}
@@ -64,6 +85,10 @@ func RenderMarkdown(writer io.Writer, value Report) error {
 }
 
 func normalizedReport(value Report) Report {
+	value.Changes = SortChanges(value.Changes)
+	if value.Changes == nil {
+		value.Changes = []Change{}
+	}
 	value.Findings = SortFindings(value.Findings)
 	if value.Findings == nil {
 		value.Findings = []Finding{}
