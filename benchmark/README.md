@@ -1,6 +1,6 @@
 # ExposureMap benchmark
 
-The benchmark exists to prevent us from shipping a convincing but inaccurate configuration-security tool. It measures static completeness, finding precision, report usefulness, and CI-failure safety before hosted product work begins.
+The benchmark exists to prevent us from shipping a convincing but inaccurate configuration-security tool. It measures static completeness, finding precision, report usefulness, and CI-failure safety before the analyzer scope expands.
 
 ## Corpus policy
 
@@ -42,7 +42,7 @@ go run ./cmd/exposuremap benchmark mine \
 
 `--balanced` selects cases in repository round-robin order so one active repository cannot dominate the limit. `--compose-only` retains cases with exactly one recognized Compose path, which matches the current analyzer slice. Omit it when mining future Dockerfile or proxy-parser corpora.
 
-The output file is created atomically with mode `0600` because private-repository metadata may be supported later.
+The output file is created atomically with mode `0600` to limit access to repository metadata.
 
 ## Materialization
 
@@ -113,8 +113,8 @@ For a 20-per-rule `compose-v3` bundle, the 20 rule 005 mutations each emit one i
 
 Each meaningful report receives two independent assessments:
 
-- `primary`: mapped locally to Codex.
-- `secondary`: mapped locally to Claude.
+- `primary`: the first independent assessment.
+- `secondary`: the second independent assessment.
 - `adjudicator`: the human owner, required for disagreements, proposed CI failures, and sampled cases.
 
 The role names are generic so other projects can use different reviewers. Reviewers grade factual correctness, severity, usefulness beyond the raw diff, missed changes, unsupported claims, and every emitted finding. Primary and secondary assessments use different reviewer identities and cannot read each other's work before submission.
@@ -128,7 +128,7 @@ go run ./cmd/exposuremap benchmark score \
   --reviews reviews/
 ```
 
-## Hosted-development gate
+## Analyzer-readiness gate
 
 Percentages are compared as exact integer ratios, without floating-point rounding.
 

@@ -2,7 +2,7 @@
 
 ExposureMap compares two revisions of container configuration and explains changes to reachability and compromise blast radius.
 
-The project is an early prototype. It has a warning-only, single-file Docker Compose analyzer plus the public-corpus and blinded-review workflow used to measure precision before any hosted service is built.
+The project is an early prototype. It has a warning-only, single-file Docker Compose analyzer plus a public corpus and independent-review workflow used to measure completeness, precision, and report usefulness.
 
 ## The review question
 
@@ -88,4 +88,4 @@ A report with no findings means only "no warning-level boundary widening was det
 
 ## License
 
-Apache-2.0. The CLI, analyzer, rules, GitHub integration, and API are intended to remain self-hostable.
+Apache-2.0.
