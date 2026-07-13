@@ -113,27 +113,42 @@ func pureServiceRenames(base, head graph.Revision) map[string]string {
 	headServices := slices.Clone(head.Services)
 	slices.SortFunc(baseServices, compareServiceNames)
 	slices.SortFunc(headServices, compareServiceNames)
-
-	renamed := make(map[string]string)
-	matchedHead := make(map[string]struct{})
-	for _, baseService := range baseServices {
-		if _, unchanged := headNames[baseService.Name]; unchanged {
-			continue
-		}
-		for _, headService := range headServices {
-			if _, unchanged := baseNames[headService.Name]; unchanged {
-				continue
-			}
-			if _, matched := matchedHead[headService.Name]; matched ||
-				!sameBoundaryFacts(baseService, headService) {
-				continue
-			}
-			renamed[baseService.Name] = headService.Name
-			matchedHead[headService.Name] = struct{}{}
-			break
+	unmatchedBase := make([]graph.Service, 0, len(baseServices))
+	for _, service := range baseServices {
+		if _, unchanged := headNames[service.Name]; !unchanged {
+			unmatchedBase = append(unmatchedBase, service)
 		}
 	}
+	unmatchedHead := make([]graph.Service, 0, len(headServices))
+	for _, service := range headServices {
+		if _, unchanged := baseNames[service.Name]; !unchanged {
+			unmatchedHead = append(unmatchedHead, service)
+		}
+	}
+
+	renamed := make(map[string]string)
+	for _, baseService := range unmatchedBase {
+		headMatches := matchingBoundaryFacts(baseService, unmatchedHead)
+		if len(headMatches) != 1 {
+			continue
+		}
+		baseMatches := matchingBoundaryFacts(headMatches[0], unmatchedBase)
+		if len(baseMatches) != 1 {
+			continue
+		}
+		renamed[baseService.Name] = headMatches[0].Name
+	}
 	return renamed
+}
+
+func matchingBoundaryFacts(service graph.Service, candidates []graph.Service) []graph.Service {
+	matches := make([]graph.Service, 0)
+	for _, candidate := range candidates {
+		if sameBoundaryFacts(service, candidate) {
+			matches = append(matches, candidate)
+		}
+	}
+	return matches
 }
 
 func serviceNames(services []graph.Service) map[string]struct{} {

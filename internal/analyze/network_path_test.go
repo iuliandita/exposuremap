@@ -1,6 +1,7 @@
 package analyze
 
 import (
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -194,6 +195,26 @@ func TestCompareSortsDataServicePathsAndSelectsFirstNetwork(t *testing.T) {
 	got := []string{findings[0].Evidence, findings[1].Evidence}
 	if !slices.Equal(got, want) {
 		t.Fatalf("evidence = %#v, want %#v", got, want)
+	}
+}
+
+func TestPureServiceRenamesRequiresUniqueBoundaryFacts(t *testing.T) {
+	uniqueBase := normalizedRevision(exposedService("old-web", "backend"))
+	uniqueHead := normalizedRevision(exposedService("web", "backend"))
+	if got := pureServiceRenames(uniqueBase, uniqueHead); !maps.Equal(got, map[string]string{"old-web": "web"}) {
+		t.Fatalf("unique renames = %#v", got)
+	}
+
+	ambiguousBase := normalizedRevision(
+		exposedService("old-a", "backend"),
+		exposedService("old-b", "backend"),
+	)
+	ambiguousHead := normalizedRevision(
+		exposedService("new-a", "backend"),
+		exposedService("new-b", "backend"),
+	)
+	if got := pureServiceRenames(ambiguousBase, ambiguousHead); len(got) != 0 {
+		t.Fatalf("ambiguous renames = %#v, want none", got)
 	}
 }
 
