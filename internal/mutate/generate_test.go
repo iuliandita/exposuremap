@@ -16,6 +16,7 @@ import (
 	"github.com/iuliandita/exposuremap/internal/evaluate"
 	"github.com/iuliandita/exposuremap/internal/githubapi"
 	"github.com/iuliandita/exposuremap/internal/mutate"
+	"github.com/iuliandita/exposuremap/internal/report"
 	"github.com/iuliandita/exposuremap/internal/review"
 )
 
@@ -71,6 +72,49 @@ func TestGenerateCreatesOneIsolatedCompleteMutationPerRule(t *testing.T) {
 	}
 }
 
+func TestGenerateIsolatesPeerPathChanges(t *testing.T) {
+	item := mutationSourceCase()
+	cache := materializeMutationSource(t, item, []byte(`services:
+  gateway:
+    image: example/gateway:1
+    ports:
+      - "127.0.0.1:8080:80"
+  app:
+    image: example/app:1
+`))
+	bundle, err := mutate.Generate(
+		context.Background(),
+		cache,
+		benchmark.Corpus{SchemaVersion: 1, Cases: []benchmark.Case{item}},
+		1,
+	)
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	output := filepath.Join(t.TempDir(), "mutations")
+	if err := mutate.WriteBundle(output, bundle); err != nil {
+		t.Fatalf("WriteBundle() error = %v", err)
+	}
+	evaluation, err := evaluate.Build(context.Background(), filepath.Join(output, "cases"), bundle.Corpus)
+	if err != nil {
+		t.Fatalf("evaluate.Build() error = %v", err)
+	}
+
+	for index, caseReport := range evaluation.Reports {
+		ruleID := evaluation.Results[index].Findings[0].RuleID
+		if ruleID == "EM-COMPOSE-005" {
+			if len(caseReport.Analyzer.Changes) != 1 ||
+				caseReport.Analyzer.Changes[0].Kind != report.ChangePeerPathAdded {
+				t.Fatalf("rule 005 changes = %#v", caseReport.Analyzer.Changes)
+			}
+			continue
+		}
+		if len(caseReport.Analyzer.Changes) != 0 {
+			t.Fatalf("%s changes = %#v, want none", ruleID, caseReport.Analyzer.Changes)
+		}
+	}
+}
+
 func TestGenerateCreatesTwentyValidCasesPerRule(t *testing.T) {
 	item := mutationSourceCase()
 	cache := materializeMutationSource(t, item, []byte(`services:
@@ -99,6 +143,51 @@ func TestGenerateCreatesTwentyValidCasesPerRule(t *testing.T) {
 	} {
 		if counts[ruleID] != 20 {
 			t.Fatalf("%s count = %d, want 20; all counts = %#v", ruleID, counts[ruleID], counts)
+		}
+	}
+
+	output := filepath.Join(t.TempDir(), "mutations")
+	if err := mutate.WriteBundle(output, bundle); err != nil {
+		t.Fatalf("WriteBundle() error = %v", err)
+	}
+	evaluation, err := evaluate.Build(context.Background(), filepath.Join(output, "cases"), bundle.Corpus)
+	if err != nil {
+		t.Fatalf("evaluate.Build() error = %v", err)
+	}
+	if evaluation.Summary.Complete != 100 || evaluation.Summary.Incomplete != 0 ||
+		evaluation.Summary.Findings != 100 || evaluation.Summary.Changes != 20 {
+		t.Fatalf("evaluation summary = %#v", evaluation.Summary)
+	}
+	if evaluation.Summary.ChangeKinds["peer-path-added"] != 20 || len(evaluation.Summary.ChangeKinds) != 1 {
+		t.Fatalf("change kinds = %#v", evaluation.Summary.ChangeKinds)
+	}
+	for _, ruleID := range []string{
+		"EM-COMPOSE-001",
+		"EM-COMPOSE-002",
+		"EM-COMPOSE-003",
+		"EM-COMPOSE-004",
+		"EM-COMPOSE-005",
+	} {
+		if count := evaluation.Summary.Rules[ruleID]; count != 20 {
+			t.Fatalf("%s count = %d, want 20", ruleID, count)
+		}
+	}
+	if len(evaluation.Summary.Rules) != 5 {
+		t.Fatalf("rules = %#v, want exactly five", evaluation.Summary.Rules)
+	}
+	for index, caseReport := range evaluation.Reports {
+		result := evaluation.Results[index]
+		if len(result.Findings) != 1 || result.Findings[0].RuleID != bundle.Corpus.Cases[index].ExpectedBoundary {
+			t.Fatalf("result[%d] = %#v, expected boundary %q", index, result, bundle.Corpus.Cases[index].ExpectedBoundary)
+		}
+		if result.Findings[0].RuleID == "EM-COMPOSE-005" {
+			if len(caseReport.Analyzer.Changes) != 1 || caseReport.Analyzer.Changes[0].Kind != report.ChangePeerPathAdded {
+				t.Fatalf("rule 005 changes = %#v", caseReport.Analyzer.Changes)
+			}
+			continue
+		}
+		if len(caseReport.Analyzer.Changes) != 0 {
+			t.Fatalf("%s changes = %#v, want none", result.Findings[0].RuleID, caseReport.Analyzer.Changes)
 		}
 	}
 }
