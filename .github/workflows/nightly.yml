@@ -1,0 +1,52 @@
+name: Nightly
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race ./...
+
+      - name: Build nightly archive
+        shell: bash
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags='-s -w' -o dist/exposuremap-linux-amd64 ./cmd/exposuremap
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -C dist -cf - exposuremap-linux-amd64 \
+            | gzip -n > dist/exposuremap-linux-amd64.tar.gz
+          (cd dist && sha256sum exposuremap-linux-amd64.tar.gz > SHA256SUMS)
+
+      - name: Upload nightly artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: exposuremap-nightly-${{ github.sha }}
+          path: |
+            dist/exposuremap-linux-amd64.tar.gz
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
