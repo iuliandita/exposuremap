@@ -26,6 +26,7 @@ type Revision struct {
 // Service contains the boundary-relevant facts observed for one service.
 type Service struct {
 	Name         string       `json:"name"`
+	Image        string       `json:"image,omitempty"`
 	Bindings     []Binding    `json:"bindings,omitempty"`
 	Networks     []string     `json:"networks,omitempty"`
 	Mounts       []Mount      `json:"mounts,omitempty"`
@@ -60,6 +61,7 @@ func Normalize(revision Revision) Revision {
 	for _, service := range revision.Services {
 		normalized := Service{
 			Name:        service.Name,
+			Image:       service.Image,
 			Bindings:    slices.Clone(service.Bindings),
 			Networks:    sortedUnique(service.Networks),
 			Mounts:      slices.Clone(service.Mounts),

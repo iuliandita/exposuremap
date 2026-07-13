@@ -82,6 +82,7 @@ type Report struct {
 	UsefulnessAgreement Ratio    `json:"usefulness_agreement"`
 	MutationRecall      Ratio    `json:"mutation_recall"`
 	FalseFailures       int      `json:"false_failures"`
+	MissedChanges       int      `json:"missed_changes"`
 	Passed              bool     `json:"passed"`
 	BlockingReasons     []string `json:"blocking_reasons"`
 }

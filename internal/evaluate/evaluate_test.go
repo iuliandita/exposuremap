@@ -90,8 +90,8 @@ func TestRunCaseReportsBothIncompleteRevisions(t *testing.T) {
 	if outcome.Result.Findings == nil {
 		t.Fatal("incomplete result findings = nil, want stable empty array")
 	}
-	if outcome.Report.Analyzer.Diagnostics[0] != "base: parse compose file: invalid or unresolved Compose model" ||
-		outcome.Report.Analyzer.Diagnostics[1] != "head: parse compose file: invalid or unresolved Compose model" {
+	if outcome.Report.Analyzer.Diagnostics[0] != "base: parse compose file: unresolved boundary interpolation in services.web.image" ||
+		outcome.Report.Analyzer.Diagnostics[1] != "head: parse compose file: unresolved boundary interpolation in services.web.image" {
 		t.Fatalf("diagnostics = %#v", outcome.Report.Analyzer.Diagnostics)
 	}
 }
