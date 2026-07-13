@@ -144,7 +144,7 @@ func unsupportedConstruct(model map[string]any) string {
 	slices.Sort(serviceNames)
 	for _, serviceName := range serviceNames {
 		service, _ := services[serviceName].(map[string]any)
-		for _, field := range []string{"extends", "env_file", "label_file", "profiles"} {
+		for _, field := range []string{"extends", "label_file", "profiles"} {
 			if _, exists := service[field]; exists {
 				return fmt.Sprintf("services.%s.%s", serviceName, field)
 			}

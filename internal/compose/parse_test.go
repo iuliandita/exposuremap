@@ -82,7 +82,6 @@ func TestParseFileRejectsUnsupportedExternalInputs(t *testing.T) {
 	tests := map[string]string{
 		"include":    "include:\n  - other.yaml\nservices:\n  web:\n    image: nginx\n",
 		"extends":    "services:\n  web:\n    extends:\n      file: other.yaml\n      service: base\n",
-		"env file":   "services:\n  web:\n    image: nginx\n    env_file: .env\n",
 		"label file": "services:\n  web:\n    image: nginx\n    label_file: labels.env\n",
 		"profiles":   "services:\n  web:\n    image: nginx\n    profiles: [debug]\n",
 	}
@@ -96,10 +95,43 @@ func TestParseFileRejectsUnsupportedExternalInputs(t *testing.T) {
 	}
 }
 
+func TestParseFileIgnoresServiceEnvFilesWithoutReadingThem(t *testing.T) {
+	path := writeCompose(t, t.TempDir(), "compose.yaml", `
+services:
+  long:
+    image: nginx
+    env_file:
+      - path: missing-long.env
+        required: true
+    ports:
+      - "127.0.0.1:8081:80"
+  short:
+    image: nginx
+    env_file: missing-short.env
+    ports:
+      - "127.0.0.1:8080:80"
+`)
+
+	revision, err := composeparser.ParseFile(context.Background(), path)
+	if err != nil {
+		t.Fatalf("ParseFile() error = %v", err)
+	}
+	if !revision.Complete {
+		t.Fatal("revision.Complete = false, want true")
+	}
+	for serviceName, published := range map[string]string{"long": "8081", "short": "8080"} {
+		service := serviceNamed(t, revision, serviceName)
+		if len(service.Bindings) != 1 || service.Bindings[0].Published != published {
+			t.Fatalf("%s bindings = %#v, want published port %s", serviceName, service.Bindings, published)
+		}
+	}
+}
+
 func TestParseFileRejectsMalformedOrUnresolvedInput(t *testing.T) {
 	tests := map[string]string{
-		"malformed":  "services: [",
-		"unresolved": "services:\n  web:\n    image: nginx\n    ports:\n      - ${PUBLISHED:?required}:80\n",
+		"malformed":               "services: [",
+		"unresolved env file":     "services:\n  web:\n    image: nginx\n    env_file: ${ENV_FILE:?required}\n",
+		"unresolved publish port": "services:\n  web:\n    image: nginx\n    ports:\n      - ${PUBLISHED:?required}:80\n",
 	}
 	for name, contents := range tests {
 		t.Run(name, func(t *testing.T) {
