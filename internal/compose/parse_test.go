@@ -86,7 +86,6 @@ func TestParseFileRejectsUnsupportedExternalInputs(t *testing.T) {
 		"include":    "include:\n  - other.yaml\nservices:\n  web:\n    image: nginx\n",
 		"extends":    "services:\n  web:\n    extends:\n      file: other.yaml\n      service: base\n",
 		"label file": "services:\n  web:\n    image: nginx\n    label_file: labels.env\n",
-		"profiles":   "services:\n  web:\n    image: nginx\n    profiles: [debug]\n",
 	}
 
 	for name, contents := range tests {
@@ -94,6 +93,149 @@ func TestParseFileRejectsUnsupportedExternalInputs(t *testing.T) {
 			path := writeCompose(t, t.TempDir(), "compose.yaml", contents)
 			_, err := composeparser.ParseFile(context.Background(), path)
 			assertIncomplete(t, err)
+		})
+	}
+}
+
+func TestParseFilePreservesSymbolicPublishedPorts(t *testing.T) {
+	t.Setenv("HTTP_PORT", "19080")
+	t.Setenv("ADMIN_PORT", "19081")
+	t.Setenv("HTTPS_PORT", "19443")
+	path := writeCompose(t, t.TempDir(), "compose.yaml", `
+services:
+  web:
+    image: nginx
+    ports:
+      - ${HTTP_PORT}:80
+      - 127.0.0.1:${ADMIN_PORT}:8080/udp
+      - target: 443
+        published: ${HTTPS_PORT}
+        protocol: tcp
+      - 65535:81
+      - 65534:82
+`)
+
+	revision, err := composeparser.ParseFile(context.Background(), path)
+	if err != nil {
+		t.Fatalf("ParseFile() error = %v", err)
+	}
+	web := serviceNamed(t, revision, "web")
+	if !revision.Complete || web.Reachability != graph.ReachabilityHostExposed {
+		t.Fatalf("revision = %#v, want complete host-exposed service", revision)
+	}
+	if len(web.Bindings) != 5 {
+		t.Fatalf("bindings = %#v, want five", web.Bindings)
+	}
+	wants := map[uint32]graph.Binding{
+		80:   {Published: "${HTTP_PORT}", Target: 80, Protocol: "tcp"},
+		81:   {Published: "65535", Target: 81, Protocol: "tcp"},
+		82:   {Published: "65534", Target: 82, Protocol: "tcp"},
+		443:  {Published: "${HTTPS_PORT}", Target: 443, Protocol: "tcp"},
+		8080: {HostIP: "127.0.0.1", Published: "${ADMIN_PORT}", Target: 8080, Protocol: "udp"},
+	}
+	for _, binding := range web.Bindings {
+		if want, exists := wants[binding.Target]; !exists || binding != want {
+			t.Fatalf("binding = %#v, want one of %#v", binding, wants)
+		}
+	}
+}
+
+func TestParseFileDoesNotRestoreInterpolatedConcretePortAsSymbolic(t *testing.T) {
+	path := writeCompose(t, t.TempDir(), "compose.yaml", `
+services:
+  web:
+    image: nginx
+    ports:
+      - ${PORT}:80
+      - ${STATIC:-6553}5:81
+`)
+
+	revision, err := composeparser.ParseFile(context.Background(), path)
+	if err != nil {
+		t.Fatalf("ParseFile() error = %v", err)
+	}
+	web := serviceNamed(t, revision, "web")
+	if len(web.Bindings) != 2 {
+		t.Fatalf("bindings = %#v, want two", web.Bindings)
+	}
+	wants := map[uint32]string{80: "${PORT}", 81: "65535"}
+	for _, binding := range web.Bindings {
+		if want := wants[binding.Target]; binding.Published != want {
+			t.Fatalf("binding = %#v, want published %q", binding, want)
+		}
+	}
+}
+
+func TestParseFileUsesDefaultProfileProjection(t *testing.T) {
+	t.Setenv("COMPOSE_PROFILES", "debug")
+	path := writeCompose(t, t.TempDir(), "compose.yaml", `
+services:
+  core:
+    image: nginx
+    ports:
+      - 8080:80
+  debug:
+    image: nginx
+    profiles: [debug]
+    env_file: missing.env
+    ports:
+      - 9000:90
+  metrics:
+    image: nginx
+    profiles: [all, metrics]
+    ports:
+      - 9100:91
+`)
+
+	revision, err := composeparser.ParseFile(context.Background(), path)
+	if err != nil {
+		t.Fatalf("ParseFile() error = %v", err)
+	}
+	if !revision.Complete {
+		t.Fatal("revision.Complete = false, want true")
+	}
+	if got, want := len(revision.Services), 1; got != want {
+		t.Fatalf("services = %#v, want %d default-profile service", revision.Services, want)
+	}
+	if got := revision.Services[0].Name; got != "core" {
+		t.Fatalf("service name = %q, want core", got)
+	}
+}
+
+func TestParseFileRejectsSymbolicPortVariableReuseInGraphFields(t *testing.T) {
+	tests := map[string]struct {
+		contents   string
+		diagnostic string
+	}{
+		"image default": {
+			contents:   "services:\n  web:\n    image: ${PORT:-nginx}\n    ports:\n      - ${PORT}:80\n",
+			diagnostic: "parse compose file: unresolved boundary interpolation in services.web.image",
+		},
+		"published default": {
+			contents:   "services:\n  web:\n    image: nginx\n    ports:\n      - ${PORT}:80\n      - ${PORT:-8080}:81\n",
+			diagnostic: "parse compose file: unresolved boundary interpolation in services.web.ports",
+		},
+		"profile default": {
+			contents:   "services:\n  web:\n    image: nginx\n    profiles: [\"${PORT:-debug}\"]\n    ports:\n      - ${PORT}:80\n",
+			diagnostic: "parse compose file: unresolved boundary interpolation in services.web.profiles",
+		},
+		"required env file": {
+			contents:   "services:\n  web:\n    image: nginx\n    env_file: ${PORT:?required}\n    ports:\n      - ${PORT}:80\n",
+			diagnostic: "parse compose file: unresolved boundary interpolation in services.web.env_file",
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			path := writeCompose(t, t.TempDir(), "compose.yaml", test.contents)
+			_, err := composeparser.ParseFile(context.Background(), path)
+			var incomplete *composeparser.IncompleteError
+			if !errors.As(err, &incomplete) {
+				t.Fatalf("error = %v, want *compose.IncompleteError", err)
+			}
+			if got := incomplete.Error(); got != test.diagnostic {
+				t.Fatalf("error = %q, want %q", got, test.diagnostic)
+			}
 		})
 	}
 }
@@ -159,13 +301,31 @@ func TestParseFileRejectsUnresolvedBoundaryInterpolation(t *testing.T) {
 				"      - type: bind\n        source: ${SOURCE}\n        target: /data\n",
 			diagnostic: "parse compose file: unresolved boundary interpolation in services.web.volumes",
 		},
-		"short published port": {
-			contents:   "services:\n  web:\n    image: nginx\n    ports:\n      - ${PUBLISHED}:80\n",
+		"published host IP": {
+			contents:   "services:\n  web:\n    image: nginx\n    ports:\n      - ${HOST_IP}:8080:80\n",
 			diagnostic: "parse compose file: unresolved boundary interpolation in services.web.ports",
 		},
-		"long published port": {
+		"composed published port": {
 			contents: "services:\n  web:\n    image: nginx\n    ports:\n" +
-				"      - target: 80\n        published: ${PUBLISHED}\n",
+				"      - target: 80\n        published: port-${PUBLISHED}\n",
+			diagnostic: "parse compose file: unresolved boundary interpolation in services.web.ports",
+		},
+		"unbraced published port": {
+			contents:   "services:\n  web:\n    image: nginx\n    ports:\n      - $PUBLISHED:80\n",
+			diagnostic: "parse compose file: unresolved boundary interpolation in services.web.ports",
+		},
+		"published port range": {
+			contents:   "services:\n  web:\n    image: nginx\n    ports:\n      - ${START}-${END}:80\n",
+			diagnostic: "parse compose file: unresolved boundary interpolation in services.web.ports",
+		},
+		"long target port": {
+			contents: "services:\n  web:\n    image: nginx\n    ports:\n" +
+				"      - target: ${TARGET}\n        published: 8080\n",
+			diagnostic: "parse compose file: unresolved boundary interpolation in services.web.ports",
+		},
+		"long protocol": {
+			contents: "services:\n  web:\n    image: nginx\n    ports:\n" +
+				"      - target: 80\n        published: 8080\n        protocol: ${PROTOCOL}\n",
 			diagnostic: "parse compose file: unresolved boundary interpolation in services.web.ports",
 		},
 		"network": {
@@ -234,7 +394,7 @@ services:
 	if !errors.As(err, &incomplete) {
 		t.Fatalf("error = %v, want *compose.IncompleteError", err)
 	}
-	if got, want := incomplete.Error(), "parse compose file: unresolved boundary interpolation in services.alpha.ports"; got != want {
+	if got, want := incomplete.Error(), "parse compose file: unresolved boundary interpolation in services.alpha.networks"; got != want {
 		t.Fatalf("error = %q, want %q", got, want)
 	}
 }

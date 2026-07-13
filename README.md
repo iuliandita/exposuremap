@@ -21,7 +21,7 @@ ExposureMap will not call a service Internet-accessible unless explicit project 
 
 ## Current analyzer slice
 
-The current CLI accepts one regular Compose file for each revision. It normalizes services, resolved image references, published ports, Compose networks, bind mounts, privileged mode, and host network mode with the reference `compose-go` loader.
+The current CLI accepts one regular Compose file for each revision. It normalizes services, resolved image references, published ports, Compose networks, bind mounts, privileged mode, and host network mode with the reference `compose-go` loader. Exact plain `${NAME}` expressions in the published-port position are preserved as symbolic bindings.
 
 It emits two informational peer-path change kinds:
 
@@ -51,7 +51,7 @@ go run ./cmd/exposuremap diff \
 
 Use `--format markdown` for a review-oriented report. Complete analyses are deliberately reported as `warn`, even with no findings. Unsupported or unresolved inputs are `incomplete`. Both exit `0`; this prototype cannot become an accidental CI gate. Invalid invocations and output failures exit `2`.
 
-Compose overrides, includes, extends, profiles, label files, Dockerfiles, proxy configuration, policy, nginx, Kubernetes, Terraform, live Docker state, firewalls, DNS, Nginx Proxy Manager, and Apache are outside the current analyzer slice. Service-level `env_file` declarations are accepted as container-environment metadata, but the referenced files are never read and their values do not affect the graph. The adapter rejects other external Compose inputs instead of reading them implicitly.
+Compose overrides, includes, extends, label files, Dockerfiles, proxy configuration, policy, nginx, Kubernetes, Terraform, live Docker state, firewalls, DNS, Nginx Proxy Manager, and Apache are outside the current analyzer slice. The adapter analyzes the default Compose projection with no profiles enabled, so profile-gated services are excluded. It does not infer profile settings or read process variables or `.env`. Service-level `env_file` declarations are accepted as container-environment metadata, but the referenced files are never read and their values do not affect the graph. The adapter rejects other external Compose inputs instead of reading them implicitly.
 
 ## What exists now
 
