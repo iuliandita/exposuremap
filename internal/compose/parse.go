@@ -31,8 +31,26 @@ func (err *IncompleteError) Error() string {
 	return err.Reason
 }
 
+// ParseOptions contains explicit inputs used while normalizing one revision.
+type ParseOptions struct {
+	Variables map[string]string
+}
+
 // ParseFile safely loads one regular Compose file and normalizes boundary facts.
 func ParseFile(ctx context.Context, filePath string) (graph.Revision, error) {
+	return ParseFileWithOptions(ctx, filePath, ParseOptions{})
+}
+
+// ParseFileWithOptions safely loads one regular Compose file with explicit variables.
+func ParseFileWithOptions(ctx context.Context, filePath string, parseOptions ParseOptions) (graph.Revision, error) {
+	variables := make(map[string]string, len(parseOptions.Variables))
+	for name, value := range parseOptions.Variables {
+		variables[name] = value
+	}
+	lookup := func(name string) (string, bool) {
+		value, exists := variables[name]
+		return value, exists
+	}
 	content, err := readRegularFile(filePath)
 	if err != nil {
 		return graph.Revision{}, incomplete("read compose file: %s", safeFileError(err))
@@ -68,18 +86,23 @@ func ParseFile(ctx context.Context, filePath string) (graph.Revision, error) {
 	if reason := unsupportedConstruct(model); reason != "" {
 		return graph.Revision{}, incomplete("unsupported Compose construct: %s", reason)
 	}
-	symbolicVariables, field := boundaryInterpolation(model)
+	symbolicVariables, field := boundaryInterpolation(model, lookup)
 	if field != "" {
 		return graph.Revision{}, incomplete("parse compose file: unresolved boundary interpolation in %s", field)
 	}
-	symbolicPorts, ok := allocateSymbolicPorts(model, content, symbolicVariables)
+	symbolicPorts, ok := allocateSymbolicPorts(model, content, symbolicVariables, lookup)
 	if !ok {
 		return graph.Revision{}, incomplete("parse compose file: too many symbolic published ports")
 	}
-	symbolicValues := make(map[string]string, len(symbolicPorts))
+	symbolicValues := make(map[string]string, len(variables)+len(symbolicPorts))
+	for name, value := range variables {
+		symbolicValues[name] = value
+	}
 	for sentinel, expression := range symbolicPorts {
 		variable, _ := symbolicVariable(expression)
-		symbolicValues[variable] = sentinel
+		if _, explicit := symbolicValues[variable]; !explicit {
+			symbolicValues[variable] = sentinel
+		}
 	}
 	normalizedOptions := func(normalized *loader.Options) {
 		options(normalized)
@@ -191,7 +214,7 @@ func unsupportedConstruct(model map[string]any) string {
 	return ""
 }
 
-func boundaryInterpolation(model map[string]any) (map[string]struct{}, string) {
+func boundaryInterpolation(model map[string]any, lookup template.Mapping) (map[string]struct{}, string) {
 	symbolicVariables := map[string]struct{}{}
 	services, _ := model["services"].(map[string]any)
 	serviceNames := make([]string, 0, len(services))
@@ -208,9 +231,9 @@ func boundaryInterpolation(model map[string]any) (map[string]struct{}, string) {
 			}
 			unresolved := false
 			if field == "ports" {
-				unresolved = collectSymbolicPortVariables(value, symbolicVariables)
+				unresolved = collectSymbolicPortVariables(value, symbolicVariables, lookup)
 			} else {
-				unresolved = containsUnresolvedBoundaryField(field, value)
+				unresolved = containsUnresolvedBoundaryField(field, value, lookup)
 			}
 			if unresolved {
 				return nil, fmt.Sprintf("services.%s.%s", serviceName, field)
@@ -226,7 +249,7 @@ func boundaryInterpolation(model map[string]any) (map[string]struct{}, string) {
 			}
 			conflict := referencesSymbolicVariables(value, symbolicVariables)
 			if field == "ports" {
-				conflict = conflictingSymbolicPortVariable(value, symbolicVariables)
+				conflict = conflictingSymbolicPortVariable(value, symbolicVariables, lookup)
 			}
 			if conflict {
 				return nil, fmt.Sprintf("services.%s.%s", serviceName, field)
@@ -241,42 +264,42 @@ func boundaryInterpolation(model map[string]any) (map[string]struct{}, string) {
 	return symbolicVariables, ""
 }
 
-func containsUnresolvedBoundaryField(field string, value any) bool {
+func containsUnresolvedBoundaryField(field string, value any, lookup template.Mapping) bool {
 	switch field {
 	case "networks":
-		return containsUnresolvedNetworkName(value)
+		return containsUnresolvedNetworkName(value, lookup)
 	case "volumes":
-		return containsUnresolvedSelectedFields(value, []string{"type", "source", "target", "read_only"})
+		return containsUnresolvedSelectedFields(value, []string{"type", "source", "target", "read_only"}, lookup)
 	default:
-		return containsUnresolvedInterpolation(value)
+		return containsUnresolvedInterpolation(value, lookup)
 	}
 }
 
-func collectSymbolicPortVariables(value any, variables map[string]struct{}) bool {
+func collectSymbolicPortVariables(value any, variables map[string]struct{}, lookup template.Mapping) bool {
 	switch typed := value.(type) {
 	case string:
-		if !unresolvedInterpolation(typed) {
+		if !unresolvedInterpolation(typed, lookup) {
 			return false
 		}
-		variable, ok := symbolicShortPortVariable(typed)
+		variable, ok := symbolicShortPortVariable(typed, lookup)
 		if !ok {
 			return true
 		}
 		variables[variable] = struct{}{}
 	case []any:
 		for _, item := range typed {
-			if collectSymbolicPortVariables(item, variables) {
+			if collectSymbolicPortVariables(item, variables, lookup) {
 				return true
 			}
 		}
 	case map[string]any:
 		for _, field := range []string{"host_ip", "target", "protocol"} {
-			if item, exists := typed[field]; exists && containsUnresolvedInterpolation(item) {
+			if item, exists := typed[field]; exists && containsUnresolvedInterpolation(item, lookup) {
 				return true
 			}
 		}
 		published, exists := typed["published"]
-		if !exists || !containsUnresolvedInterpolation(published) {
+		if !exists || !containsUnresolvedInterpolation(published, lookup) {
 			return false
 		}
 		expression, ok := published.(string)
@@ -292,16 +315,16 @@ func collectSymbolicPortVariables(value any, variables map[string]struct{}) bool
 	return false
 }
 
-func conflictingSymbolicPortVariable(value any, variables map[string]struct{}) bool {
+func conflictingSymbolicPortVariable(value any, variables map[string]struct{}, lookup template.Mapping) bool {
 	switch typed := value.(type) {
 	case string:
-		if variable, ok := symbolicShortPortVariable(typed); ok {
+		if variable, ok := symbolicShortPortVariable(typed, lookup); ok {
 			typed = strings.Replace(typed, "${"+variable+"}", "65535", 1)
 		}
 		return referencesSymbolicVariables(typed, variables)
 	case []any:
 		for _, item := range typed {
-			if conflictingSymbolicPortVariable(item, variables) {
+			if conflictingSymbolicPortVariable(item, variables, lookup) {
 				return true
 			}
 		}
@@ -336,32 +359,66 @@ func referencesSymbolicVariables(value any, variables map[string]struct{}) bool 
 	return false
 }
 
-func symbolicShortPortVariable(value string) (string, bool) {
+func symbolicShortPortVariable(value string, lookup template.Mapping) (string, bool) {
 	port := value
-	if separator := strings.LastIndexByte(port, '/'); separator >= 0 {
-		protocol := port[separator+1:]
-		if protocol == "" || unresolvedInterpolation(protocol) {
+	if separator := lastIndexOutsideInterpolation(port, '/'); separator >= 0 {
+		protocol, ok := substituteResolved(port[separator+1:], lookup)
+		if !ok || protocol == "" {
 			return "", false
 		}
 		port = port[:separator]
 	}
-	targetSeparator := strings.LastIndexByte(port, ':')
-	if targetSeparator < 0 || !validPortNumber(port[targetSeparator+1:]) {
+	targetSeparator := lastIndexOutsideInterpolation(port, ':')
+	if targetSeparator < 0 {
+		return "", false
+	}
+	target, ok := substituteResolved(port[targetSeparator+1:], lookup)
+	if !ok || !validPortNumber(target) {
 		return "", false
 	}
 	hostAndPublished := port[:targetSeparator]
 	if variable, ok := symbolicVariable(hostAndPublished); ok {
+		if _, exists := lookup(variable); exists {
+			return "", false
+		}
 		return variable, true
 	}
-	publishedSeparator := strings.LastIndexByte(hostAndPublished, ':')
+	publishedSeparator := lastIndexOutsideInterpolation(hostAndPublished, ':')
 	if publishedSeparator < 0 {
 		return "", false
 	}
-	host := hostAndPublished[:publishedSeparator]
-	if host == "" || unresolvedInterpolation(host) {
+	host, ok := substituteResolved(hostAndPublished[:publishedSeparator], lookup)
+	if !ok || host == "" {
 		return "", false
 	}
-	return symbolicVariable(hostAndPublished[publishedSeparator+1:])
+	variable, ok := symbolicVariable(hostAndPublished[publishedSeparator+1:])
+	if !ok {
+		return "", false
+	}
+	if _, exists := lookup(variable); exists {
+		return "", false
+	}
+	return variable, true
+}
+
+func lastIndexOutsideInterpolation(value string, separator byte) int {
+	last := -1
+	depth := 0
+	for index := 0; index < len(value); index++ {
+		if value[index] == '$' && index+1 < len(value) && value[index+1] == '{' {
+			depth++
+			index++
+			continue
+		}
+		if value[index] == '}' && depth > 0 {
+			depth--
+			continue
+		}
+		if value[index] == separator && depth == 0 {
+			last = index
+		}
+	}
+	return last
 }
 
 func symbolicVariable(expression string) (string, bool) {
@@ -394,9 +451,10 @@ func allocateSymbolicPorts(
 	model map[string]any,
 	content []byte,
 	variables map[string]struct{},
+	lookup template.Mapping,
 ) (map[string]string, bool) {
 	used := decimalPorts(content)
-	collectConcretePublishedPorts(model, used)
+	collectConcretePublishedPorts(model, used, lookup)
 	names := make([]string, 0, len(variables))
 	for name := range variables {
 		names = append(names, name)
@@ -442,7 +500,7 @@ func decimalPorts(content []byte) map[string]struct{} {
 	return result
 }
 
-func collectConcretePublishedPorts(model map[string]any, used map[string]struct{}) {
+func collectConcretePublishedPorts(model map[string]any, used map[string]struct{}, lookup template.Mapping) {
 	services, _ := model["services"].(map[string]any)
 	for _, service := range services {
 		fields, _ := service.(map[string]any)
@@ -450,10 +508,10 @@ func collectConcretePublishedPorts(model map[string]any, used map[string]struct{
 		for _, item := range ports {
 			switch typed := item.(type) {
 			case string:
-				if _, symbolic := symbolicShortPortVariable(typed); symbolic {
+				if _, symbolic := symbolicShortPortVariable(typed, lookup); symbolic {
 					continue
 				}
-				resolved, err := substituteWithoutEnvironment(typed)
+				resolved, err := substitute(typed, lookup)
 				if err != nil {
 					continue
 				}
@@ -471,10 +529,12 @@ func collectConcretePublishedPorts(model map[string]any, used map[string]struct{
 				if !ok {
 					continue
 				}
-				if _, symbolic := symbolicVariable(published); symbolic {
-					continue
+				if variable, symbolic := symbolicVariable(published); symbolic {
+					if _, explicit := lookup(variable); !explicit {
+						continue
+					}
 				}
-				resolved, err := substituteWithoutEnvironment(published)
+				resolved, err := substitute(published, lookup)
 				if err == nil && resolved != "" {
 					used[resolved] = struct{}{}
 				}
@@ -483,27 +543,27 @@ func collectConcretePublishedPorts(model map[string]any, used map[string]struct{
 	}
 }
 
-func substituteWithoutEnvironment(value string) (string, error) {
+func substitute(value string, lookup template.Mapping) (string, error) {
 	return template.SubstituteWithOptions(
 		value,
-		func(string) (string, bool) { return "", false },
+		lookup,
 		template.WithoutLogging,
 	)
 }
 
-func containsUnresolvedSelectedFields(value any, fields []string) bool {
+func containsUnresolvedSelectedFields(value any, fields []string, lookup template.Mapping) bool {
 	switch typed := value.(type) {
 	case string:
-		return unresolvedInterpolation(typed)
+		return unresolvedInterpolation(typed, lookup)
 	case []any:
 		for _, item := range typed {
-			if containsUnresolvedSelectedFields(item, fields) {
+			if containsUnresolvedSelectedFields(item, fields, lookup) {
 				return true
 			}
 		}
 	case map[string]any:
 		for _, field := range fields {
-			if item, exists := typed[field]; exists && containsUnresolvedInterpolation(item) {
+			if item, exists := typed[field]; exists && containsUnresolvedInterpolation(item, lookup) {
 				return true
 			}
 		}
@@ -511,19 +571,19 @@ func containsUnresolvedSelectedFields(value any, fields []string) bool {
 	return false
 }
 
-func containsUnresolvedNetworkName(value any) bool {
+func containsUnresolvedNetworkName(value any, lookup template.Mapping) bool {
 	switch typed := value.(type) {
 	case string:
-		return unresolvedInterpolation(typed)
+		return unresolvedInterpolation(typed, lookup)
 	case []any:
 		for _, item := range typed {
-			if containsUnresolvedNetworkName(item) {
+			if containsUnresolvedNetworkName(item, lookup) {
 				return true
 			}
 		}
 	case map[string]any:
 		for network := range typed {
-			if unresolvedInterpolation(network) {
+			if unresolvedInterpolation(network, lookup) {
 				return true
 			}
 		}
@@ -531,19 +591,19 @@ func containsUnresolvedNetworkName(value any) bool {
 	return false
 }
 
-func containsUnresolvedInterpolation(value any) bool {
+func containsUnresolvedInterpolation(value any, lookup template.Mapping) bool {
 	switch typed := value.(type) {
 	case string:
-		return unresolvedInterpolation(typed)
+		return unresolvedInterpolation(typed, lookup)
 	case []any:
 		for _, item := range typed {
-			if containsUnresolvedInterpolation(item) {
+			if containsUnresolvedInterpolation(item, lookup) {
 				return true
 			}
 		}
 	case map[string]any:
 		for key, item := range typed {
-			if unresolvedInterpolation(key) || containsUnresolvedInterpolation(item) {
+			if unresolvedInterpolation(key, lookup) || containsUnresolvedInterpolation(item, lookup) {
 				return true
 			}
 		}
@@ -551,17 +611,22 @@ func containsUnresolvedInterpolation(value any) bool {
 	return false
 }
 
-func unresolvedInterpolation(value string) bool {
+func unresolvedInterpolation(value string, lookup template.Mapping) bool {
+	_, ok := substituteResolved(value, lookup)
+	return !ok
+}
+
+func substituteResolved(value string, lookup template.Mapping) (string, bool) {
 	if nestedInterpolation(value) {
-		return true
+		return "", false
 	}
-	_, err := template.SubstituteWithOptions(
+	resolved, err := template.SubstituteWithOptions(
 		value,
-		func(string) (string, bool) { return "", false },
+		lookup,
 		template.WithReplacementFunction(requireResolvedReplacement),
 		template.WithoutLogging,
 	)
-	return err != nil
+	return resolved, err == nil
 }
 
 func requireResolvedReplacement(

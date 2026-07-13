@@ -127,6 +127,82 @@ func TestRunDiffReportsIncompleteWithoutLeakingLocalPath(t *testing.T) {
 	}
 }
 
+func TestRunDiffUsesExplicitContext(t *testing.T) {
+	directory := t.TempDir()
+	base := writeCLICompose(t, directory, "base.yaml", `
+services:
+  web:
+    image: nginx
+    volumes:
+      - ${DATA_ROOT}:/data
+`)
+	head := writeCLICompose(t, directory, "head.yaml", `
+services:
+  web:
+    image: nginx
+    volumes:
+      - ${DATA_ROOT}:/data
+    ports:
+      - ${WEB_PORT}:80
+`)
+	contextPath := writeCLICompose(t, directory, ".exposuremap.yml", `
+schema_version: 1
+variables:
+  common:
+    DATA_ROOT: ./data
+  head:
+    WEB_PORT: "8080"
+`)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := cli.Run([]string{
+		"diff", "--base", base, "--head", head, "--context", contextPath, "--format", "json",
+	}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want warning-only 0; stderr = %q", code, stderr.String())
+	}
+	for _, want := range []string{`"status": "warn"`, `"complete": true`, `"rule_id": "EM-COMPOSE-001"`, `8080`} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("stdout missing %q:\n%s", want, stdout.String())
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestRunDiffRejectsInvalidContextWithoutLeakingPathOrValue(t *testing.T) {
+	directory := t.TempDir()
+	base := writeCLICompose(t, directory, "base.yaml", "services: {}\n")
+	head := writeCLICompose(t, directory, "head.yaml", "services: {}\n")
+	malformed := writeCLICompose(t, directory, "bad.yml", "schema_version: 1\nunknown: DO_NOT_PRINT\n")
+
+	for name, contextPath := range map[string]string{
+		"malformed": malformed,
+		"missing":   filepath.Join(directory, "missing.yml"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+
+			code := cli.Run([]string{
+				"diff", "--base", base, "--head", head, "--context", contextPath,
+			}, &stdout, &stderr)
+
+			if code != 2 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "load context:") {
+				t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+			}
+			for _, forbidden := range []string{directory, "DO_NOT_PRINT"} {
+				if strings.Contains(stderr.String(), forbidden) {
+					t.Fatalf("stderr leaks %q: %s", forbidden, stderr.String())
+				}
+			}
+		})
+	}
+}
+
 func TestRunDiffRejectsInvalidArguments(t *testing.T) {
 	tests := [][]string{
 		{"diff"},
@@ -151,7 +227,7 @@ func TestRunHelpMentionsDiff(t *testing.T) {
 
 	code := cli.Run([]string{"help"}, &stdout, &stderr)
 
-	if code != 0 || !strings.Contains(stdout.String(), "exposuremap diff") {
+	if code != 0 || !strings.Contains(stdout.String(), "exposuremap diff") || !strings.Contains(stdout.String(), "--context PATH") {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}
 }

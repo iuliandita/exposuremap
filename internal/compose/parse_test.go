@@ -3,6 +3,7 @@ package compose_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -371,6 +372,214 @@ func TestParseFileRejectsUnresolvedBoundaryInterpolation(t *testing.T) {
 				t.Fatalf("error = %q, want %q", incomplete.Error(), test.diagnostic)
 			}
 		})
+	}
+}
+
+func TestParseFileWithOptionsResolvesBoundaryVariables(t *testing.T) {
+	path := writeCompose(t, t.TempDir(), "compose.yaml", `
+services:
+  boundary:
+    image: ${REGISTRY}/${IMAGE}
+    ports:
+      - ${HOST_IP}:${PUBLISHED}:${TARGET}/${PROTOCOL}
+    networks:
+      - ${NETWORK}
+    volumes:
+      - type: ${VOLUME_TYPE}
+        source: ${SOURCE}/photos
+        target: ${MOUNT_TARGET}
+        read_only: ${READ_ONLY}
+    privileged: ${PRIVILEGED}
+  host:
+    image: nginx
+    network_mode: ${NETWORK_MODE}
+networks:
+  backend: {}
+`)
+
+	revision, err := composeparser.ParseFileWithOptions(
+		context.Background(),
+		path,
+		composeparser.ParseOptions{Variables: map[string]string{
+			"HOST_IP":      "127.0.0.1",
+			"IMAGE":        "postgres:18",
+			"MOUNT_TARGET": "/var/lib/postgresql/data",
+			"NETWORK":      "backend",
+			"NETWORK_MODE": "host",
+			"PRIVILEGED":   "true",
+			"PROTOCOL":     "udp",
+			"PUBLISHED":    "8080",
+			"READ_ONLY":    "true",
+			"REGISTRY":     "example.invalid",
+			"SOURCE":       "./data",
+			"TARGET":       "80",
+			"VOLUME_TYPE":  "bind",
+		}},
+	)
+	if err != nil {
+		t.Fatalf("ParseFileWithOptions() error = %v", err)
+	}
+
+	boundary := serviceNamed(t, revision, "boundary")
+	if boundary.Image != "example.invalid/postgres:18" || !boundary.Privileged {
+		t.Fatalf("boundary service = %#v", boundary)
+	}
+	if len(boundary.Bindings) != 1 || boundary.Bindings[0] != (graph.Binding{
+		HostIP: "127.0.0.1", Published: "8080", Target: 80, Protocol: "udp",
+	}) {
+		t.Fatalf("bindings = %#v", boundary.Bindings)
+	}
+	if !slices.Equal(boundary.Networks, []string{"backend"}) {
+		t.Fatalf("networks = %#v, want backend", boundary.Networks)
+	}
+	if len(boundary.Mounts) != 1 || boundary.Mounts[0].Type != "bind" ||
+		boundary.Mounts[0].Source != "./data/photos" ||
+		boundary.Mounts[0].Target != "/var/lib/postgresql/data" || !boundary.Mounts[0].ReadOnly {
+		t.Fatalf("mounts = %#v", boundary.Mounts)
+	}
+	if host := serviceNamed(t, revision, "host"); !host.HostNetwork {
+		t.Fatalf("host service = %#v, want host network", host)
+	}
+}
+
+func TestParseFileWithOptionsResolvesOrPreservesSymbolicPublishedPort(t *testing.T) {
+	path := writeCompose(t, t.TempDir(), "compose.yaml", `
+services:
+  web:
+    image: nginx
+    ports:
+      - ${HOST_IP}:${PUBLISHED}:80/${PROTOCOL}
+`)
+
+	partial := map[string]string{"HOST_IP": "127.0.0.1", "PROTOCOL": "udp"}
+	symbolic, err := composeparser.ParseFileWithOptions(
+		context.Background(), path, composeparser.ParseOptions{Variables: partial},
+	)
+	if err != nil {
+		t.Fatalf("symbolic ParseFileWithOptions() error = %v", err)
+	}
+	resolved, err := composeparser.ParseFileWithOptions(
+		context.Background(), path, composeparser.ParseOptions{Variables: map[string]string{
+			"HOST_IP": "127.0.0.1", "PROTOCOL": "udp", "PUBLISHED": "8080",
+		}},
+	)
+	if err != nil {
+		t.Fatalf("resolved ParseFileWithOptions() error = %v", err)
+	}
+	symbolicBinding := serviceNamed(t, symbolic, "web").Bindings[0]
+	if symbolicBinding.Published != "${PUBLISHED}" || symbolicBinding.HostIP != "127.0.0.1" || symbolicBinding.Protocol != "udp" {
+		t.Fatalf("symbolic binding = %#v", symbolicBinding)
+	}
+	if got := serviceNamed(t, resolved, "web").Bindings[0].Published; got != "8080" {
+		t.Fatalf("resolved published = %q", got)
+	}
+}
+
+func TestParseFileWithOptionsKeepsExplicitLongPortDistinctFromSymbolicSentinel(t *testing.T) {
+	path := writeCompose(t, t.TempDir(), "compose.yaml", `
+services:
+  explicit:
+    image: nginx
+    ports:
+      - target: 80
+        published: ${EXPLICIT}
+  symbolic:
+    image: nginx
+    ports:
+      - target: 81
+        published: ${MISSING}
+`)
+
+	revision, err := composeparser.ParseFileWithOptions(
+		context.Background(), path, composeparser.ParseOptions{Variables: map[string]string{"EXPLICIT": "65535"}},
+	)
+	if err != nil {
+		t.Fatalf("ParseFileWithOptions() error = %v", err)
+	}
+	if got := serviceNamed(t, revision, "explicit").Bindings[0].Published; got != "65535" {
+		t.Fatalf("explicit published = %q, want 65535", got)
+	}
+	if got := serviceNamed(t, revision, "symbolic").Bindings[0].Published; got != "${MISSING}" {
+		t.Fatalf("symbolic published = %q, want ${MISSING}", got)
+	}
+}
+
+func TestParseFileWithOptionsPreservesSymbolicPublishedPortWithTargetOperator(t *testing.T) {
+	tests := map[string]struct {
+		targetExpression string
+		targetValue      string
+		wantTarget       uint32
+	}{
+		"default":     {targetExpression: "${TARGET:-80}", targetValue: "81", wantTarget: 81},
+		"alternative": {targetExpression: "${TARGET:+82}", targetValue: "set", wantTarget: 82},
+		"required":    {targetExpression: "${TARGET:?required}", targetValue: "83", wantTarget: 83},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			path := writeCompose(t, t.TempDir(), "compose.yaml", fmt.Sprintf(`
+services:
+  web:
+    image: nginx
+    ports:
+      - ${PUBLISHED}:%s
+`, test.targetExpression))
+
+			revision, err := composeparser.ParseFileWithOptions(
+				context.Background(), path,
+				composeparser.ParseOptions{Variables: map[string]string{"TARGET": test.targetValue}},
+			)
+			if err != nil {
+				t.Fatalf("ParseFileWithOptions() error = %v", err)
+			}
+			binding := serviceNamed(t, revision, "web").Bindings[0]
+			if binding.Published != "${PUBLISHED}" || binding.Target != test.wantTarget {
+				t.Fatalf("binding = %#v, want symbolic published port and target %d", binding, test.wantTarget)
+			}
+		})
+	}
+}
+
+func TestParseFileWithOptionsTreatsEmptyValueAsPresentAndIgnoresAmbientValue(t *testing.T) {
+	t.Setenv("MODE", "host")
+	path := writeCompose(t, t.TempDir(), "compose.yaml", `
+services:
+  web:
+    image: nginx
+    network_mode: ${MODE-default}
+`)
+	variables := map[string]string{"MODE": ""}
+
+	revision, err := composeparser.ParseFileWithOptions(
+		context.Background(), path, composeparser.ParseOptions{Variables: variables},
+	)
+	if err != nil {
+		t.Fatalf("ParseFileWithOptions() error = %v", err)
+	}
+	variables["MODE"] = "host"
+	if web := serviceNamed(t, revision, "web"); web.HostNetwork || !slices.Equal(web.Networks, []string{"default"}) {
+		t.Fatalf("web = %#v, want explicit empty network mode", web)
+	}
+}
+
+func TestParseFileWithOptionsKeepsMissingNonPublishedBoundaryIncomplete(t *testing.T) {
+	path := writeCompose(t, t.TempDir(), "compose.yaml", `
+services:
+  web:
+    image: ${IMAGE}
+    volumes:
+      - ${SOURCE}/photos:/data
+`)
+
+	_, err := composeparser.ParseFileWithOptions(
+		context.Background(), path, composeparser.ParseOptions{Variables: map[string]string{"IMAGE": "nginx"}},
+	)
+	var incomplete *composeparser.IncompleteError
+	if !errors.As(err, &incomplete) {
+		t.Fatalf("error = %v, want *compose.IncompleteError", err)
+	}
+	if got, want := incomplete.Error(), "parse compose file: unresolved boundary interpolation in services.web.volumes"; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
 	}
 }
 
