@@ -1,6 +1,6 @@
 # ExposureMap benchmark
 
-The benchmark exists to prevent us from shipping a convincing but inaccurate configuration-security tool. It measures static completeness, finding precision, report usefulness, and CI-failure safety before the analyzer scope expands.
+The benchmark exists to prevent us from shipping a convincing but inaccurate configuration-security tool. It measures static completeness, finding precision, report usefulness, and CI-failure safety against explicit technical gates.
 
 ## Corpus policy
 
@@ -40,7 +40,7 @@ go run ./cmd/exposuremap benchmark mine \
   --compose-only
 ```
 
-`--balanced` selects cases in repository round-robin order so one active repository cannot dominate the limit. `--compose-only` retains cases with exactly one recognized Compose path, which matches the current analyzer slice. Omit it when mining future Dockerfile or proxy-parser corpora.
+`--balanced` selects cases in repository round-robin order so one active repository cannot dominate the limit. `--compose-only` retains cases with exactly one recognized Compose path, which matches the current analyzer slice. Omit it to include all recognized candidate paths.
 
 The output file is created atomically with mode `0600` to limit access to repository metadata.
 
