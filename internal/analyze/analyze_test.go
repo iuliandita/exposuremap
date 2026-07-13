@@ -172,6 +172,48 @@ func TestCompareDoesNotTreatPortRenumberAsBoundaryWidening(t *testing.T) {
 	}
 }
 
+func TestCompareHandlesSymbolicPublishedPorts(t *testing.T) {
+	symbolic := graph.Binding{Published: "${PUBLIC_PORT}", Target: 80}
+
+	t.Run("unchanged", func(t *testing.T) {
+		current := revision(graph.Service{Name: "web", Bindings: []graph.Binding{symbolic}})
+		if findings := analyze.Compare(current, current).Findings; len(findings) != 0 {
+			t.Fatalf("findings = %#v, want none", findings)
+		}
+	})
+
+	t.Run("new", func(t *testing.T) {
+		base := revision(graph.Service{Name: "web", Networks: []string{"default"}})
+		head := revision(graph.Service{Name: "web", Bindings: []graph.Binding{symbolic}})
+		findings := analyze.Compare(base, head).Findings
+		if len(findings) != 1 || findings[0].RuleID != "EM-COMPOSE-001" ||
+			findings[0].Evidence != "*:${PUBLIC_PORT}->80/tcp" {
+			t.Fatalf("findings = %#v, want symbolic new-port finding", findings)
+		}
+	})
+
+	t.Run("renamed variable", func(t *testing.T) {
+		base := revision(graph.Service{Name: "web", Bindings: []graph.Binding{symbolic}})
+		head := revision(graph.Service{Name: "web", Bindings: []graph.Binding{{
+			Published: "${RENAMED_PORT}", Target: 80,
+		}}})
+		if findings := analyze.Compare(base, head).Findings; len(findings) != 0 {
+			t.Fatalf("findings = %#v, want none for one-for-one symbolic renumber", findings)
+		}
+	})
+
+	t.Run("widened", func(t *testing.T) {
+		base := revision(graph.Service{Name: "web", Bindings: []graph.Binding{{
+			HostIP: "127.0.0.1", Published: "${PUBLIC_PORT}", Target: 80,
+		}}})
+		head := revision(graph.Service{Name: "web", Bindings: []graph.Binding{symbolic}})
+		findings := analyze.Compare(base, head).Findings
+		if len(findings) != 1 || findings[0].RuleID != "EM-COMPOSE-002" {
+			t.Fatalf("findings = %#v, want only symbolic bind-widening finding", findings)
+		}
+	})
+}
+
 func TestComparePreservesHostExposureAcrossServiceRename(t *testing.T) {
 	base := revision(
 		graph.Service{Name: "backend", Bindings: []graph.Binding{{Published: "8080", Target: 8080}}},
