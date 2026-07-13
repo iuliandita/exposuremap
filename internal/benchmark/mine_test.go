@@ -40,6 +40,22 @@ func TestRelevantPath(t *testing.T) {
 	}
 }
 
+func TestComposePath(t *testing.T) {
+	for candidate, want := range map[string]bool{
+		"compose.yaml":                            true,
+		"deploy/compose.prod.yml":                 true,
+		"docker/docker-compose.yml":               true,
+		"docker/compose/docker-compose.mysql.yml": true,
+		"Dockerfile":                              false,
+		"proxy/Caddyfile":                         false,
+		"proxy/nginx.conf":                        false,
+	} {
+		if got := benchmark.ComposePath(candidate); got != want {
+			t.Errorf("ComposePath(%q) = %v, want %v", candidate, got, want)
+		}
+	}
+}
+
 func TestMineDeduplicatesAndAggregatesPullRequests(t *testing.T) {
 	mergedEarly := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
 	mergedLate := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
@@ -162,6 +178,47 @@ func TestMineRejectsDecoratedRepositoryURLBeforeHistoryCalls(t *testing.T) {
 	}
 	if len(client.commitCalls) != 0 {
 		t.Fatalf("history calls = %#v, want none", client.commitCalls)
+	}
+}
+
+func TestSelectBalancedRoundRobinsRepositoriesDeterministically(t *testing.T) {
+	caseAt := func(id, repository string, day int) benchmark.Case {
+		return benchmark.Case{
+			ID:         id,
+			Repository: "https://github.com/acme/" + repository,
+			MergedAt:   time.Date(2026, 7, day, 0, 0, 0, 0, time.UTC),
+		}
+	}
+	cases := []benchmark.Case{
+		caseAt("alpha-old", "alpha", 1),
+		caseAt("gamma-new", "gamma", 6),
+		caseAt("alpha-new", "alpha", 7),
+		caseAt("beta-only", "beta", 5),
+		caseAt("gamma-old", "gamma", 2),
+		caseAt("alpha-middle", "alpha", 4),
+	}
+
+	selected := benchmark.SelectBalanced(cases, 5)
+	want := []string{"alpha-new", "beta-only", "gamma-new", "alpha-middle", "gamma-old"}
+	got := make([]string, 0, len(selected))
+	for _, item := range selected {
+		got = append(got, item.ID)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("SelectBalanced() IDs = %#v, want %#v", got, want)
+	}
+}
+
+func TestComposeCasesKeepsExactlyOneComposePath(t *testing.T) {
+	cases := []benchmark.Case{
+		{ID: "dockerfile", Paths: []string{"Dockerfile"}},
+		{ID: "compose", Paths: []string{"compose.yaml", "Dockerfile"}},
+		{ID: "multiple", Paths: []string{"compose.yaml", "deploy/compose.prod.yml"}},
+	}
+
+	selected := benchmark.ComposeCases(cases)
+	if len(selected) != 1 || selected[0].ID != "compose" {
+		t.Fatalf("ComposeCases() = %#v", selected)
 	}
 }
 

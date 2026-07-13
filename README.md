@@ -53,6 +53,8 @@ Compose overrides, includes, extends, profiles, environment/label files, Dockerf
 - Exact technical gates for completeness, resolution, precision, usefulness, and false CI failures.
 - Immutable case materialization with upstream blob SHAs, local SHA-256 checksums, and bounded private cache files.
 - A deterministic graph, four Compose boundary rules, and stable JSON/Markdown reports.
+- Atomic benchmark run bundles with scorer-compatible results and per-case review reports.
+- Deterministic training-derived mutations for each implemented rule.
 
 Run the current tests:
 

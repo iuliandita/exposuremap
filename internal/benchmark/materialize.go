@@ -152,6 +152,27 @@ func ReadMaterializedManifest(path string) (MaterializedManifest, error) {
 	return manifest, nil
 }
 
+// VerifyMaterialized reads and verifies one existing case without network access or writes.
+func VerifyMaterialized(output string, item Case) (MaterializedManifest, error) {
+	if output == "" {
+		return MaterializedManifest{}, fmt.Errorf("cache directory is required")
+	}
+	if problems := Validate(Corpus{SchemaVersion: 1, Cases: []Case{item}}); len(problems) > 0 {
+		return MaterializedManifest{}, fmt.Errorf("invalid case: %s %s", problems[0].Field, problems[0].Message)
+	}
+	if !safeCaseID(item.ID) {
+		return MaterializedManifest{}, fmt.Errorf("case %q has unsafe id", item.ID)
+	}
+	manifest, exists, err := existingMaterialization(output, item)
+	if err != nil {
+		return MaterializedManifest{}, err
+	}
+	if !exists {
+		return MaterializedManifest{}, fmt.Errorf("materialized case %s does not exist", item.ID)
+	}
+	return manifest, nil
+}
+
 func materializeCase(
 	ctx context.Context,
 	client ContentClient,

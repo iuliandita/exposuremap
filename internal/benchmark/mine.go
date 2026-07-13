@@ -36,11 +36,8 @@ func RelevantPath(candidate string) bool {
 	extension := path.Ext(base)
 	stem := strings.TrimSuffix(base, extension)
 
-	if extension == ".yml" || extension == ".yaml" {
-		if stem == "compose" || strings.HasPrefix(stem, "compose.") ||
-			stem == "docker-compose" || strings.HasPrefix(stem, "docker-compose.") {
-			return true
-		}
+	if ComposePath(candidate) {
+		return true
 	}
 	if configBase(base, "dockerfile") {
 		return true
@@ -52,6 +49,18 @@ func RelevantPath(candidate string) bool {
 		return true
 	}
 	return strings.Contains(stem, "nginx") && extension == ".conf"
+}
+
+// ComposePath reports whether a path names a recognized Compose YAML file.
+func ComposePath(candidate string) bool {
+	base := strings.ToLower(path.Base(candidate))
+	extension := path.Ext(base)
+	if extension != ".yml" && extension != ".yaml" {
+		return false
+	}
+	stem := strings.TrimSuffix(base, extension)
+	return stem == "compose" || strings.HasPrefix(stem, "compose.") ||
+		stem == "docker-compose" || strings.HasPrefix(stem, "docker-compose.")
 }
 
 func configBase(base, name string) bool {
@@ -169,6 +178,73 @@ func Mine(
 		result = result[:caseLimit]
 	}
 	return result, nil
+}
+
+// SelectBalanced selects cases in repository round-robin order, newest first per repository.
+func SelectBalanced(cases []Case, limit int) []Case {
+	if limit <= 0 || len(cases) == 0 {
+		return nil
+	}
+	byRepository := make(map[string][]Case)
+	for _, item := range cases {
+		byRepository[item.Repository] = append(byRepository[item.Repository], item)
+	}
+	repositories := make([]string, 0, len(byRepository))
+	for repository := range byRepository {
+		repositories = append(repositories, repository)
+	}
+	slices.Sort(repositories)
+	for _, repository := range repositories {
+		slices.SortFunc(byRepository[repository], func(left, right Case) int {
+			if left.MergedAt.After(right.MergedAt) {
+				return -1
+			}
+			if left.MergedAt.Before(right.MergedAt) {
+				return 1
+			}
+			return strings.Compare(left.ID, right.ID)
+		})
+	}
+
+	if limit > len(cases) {
+		limit = len(cases)
+	}
+	result := make([]Case, 0, limit)
+	for round := 0; len(result) < limit; round++ {
+		added := false
+		for _, repository := range repositories {
+			items := byRepository[repository]
+			if round >= len(items) {
+				continue
+			}
+			result = append(result, items[round])
+			added = true
+			if len(result) == limit {
+				break
+			}
+		}
+		if !added {
+			break
+		}
+	}
+	return result
+}
+
+// ComposeCases returns cases containing exactly one recognized Compose path.
+func ComposeCases(cases []Case) []Case {
+	result := make([]Case, 0, len(cases))
+	for _, item := range cases {
+		count := 0
+		for _, candidate := range item.Paths {
+			if ComposePath(candidate) {
+				count++
+			}
+		}
+		if count == 1 {
+			result = append(result, item)
+		}
+	}
+	return result
 }
 
 func repositoryParts(repositoryURL string) (string, string, error) {
