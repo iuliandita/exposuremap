@@ -19,6 +19,7 @@ import (
 const (
 	apiVersion     = "2026-03-10"
 	defaultBaseURL = "https://api.github.com/"
+	maxRetries     = 2
 	maxErrorBytes  = 1 << 20
 	maxCommitBytes = 64 << 10
 	maxTreeBytes   = 8 << 20
@@ -29,6 +30,8 @@ type Client struct {
 	BaseURL    *url.URL
 	Token      string
 	HTTPClient *http.Client
+	// RetryDelay overrides the delay before retry attempt 1 or 2. It is primarily useful in tests.
+	RetryDelay func(attempt int) time.Duration
 }
 
 // PullRequest contains only the immutable metadata needed for a corpus case.
@@ -176,8 +179,7 @@ func (client Client) GetFile(
 		return File{}, fmt.Errorf("create GitHub API request: %w", err)
 	}
 	client.setHeaders(request)
-	httpClient := client.configuredHTTPClient()
-	response, err := httpClient.Do(request)
+	response, err := client.do(ctx, request)
 	if err != nil {
 		return File{}, fmt.Errorf("send GitHub API request: %w", err)
 	}
@@ -367,8 +369,7 @@ func (client Client) get(ctx context.Context, target string, destination any) (s
 		return "", fmt.Errorf("create GitHub API request: %w", err)
 	}
 	client.setHeaders(request)
-	httpClient := client.configuredHTTPClient()
-	response, err := httpClient.Do(request)
+	response, err := client.do(ctx, request)
 	if err != nil {
 		return "", fmt.Errorf("send GitHub API request: %w", err)
 	}
@@ -400,7 +401,7 @@ func (client Client) getBounded(ctx context.Context, target string, destination 
 		return fmt.Errorf("create GitHub API request: %w", err)
 	}
 	client.setHeaders(request)
-	response, err := client.configuredHTTPClient().Do(request)
+	response, err := client.do(ctx, request)
 	if err != nil {
 		return fmt.Errorf("send GitHub API request: %w", err)
 	}
@@ -434,6 +435,54 @@ func (client Client) configuredHTTPClient() *http.Client {
 		return client.HTTPClient
 	}
 	return &http.Client{Timeout: 15 * time.Second}
+}
+
+func (client Client) do(ctx context.Context, request *http.Request) (*http.Response, error) {
+	httpClient := client.configuredHTTPClient()
+	for retries := 0; ; retries++ {
+		response, err := httpClient.Do(request)
+		if err != nil {
+			return nil, err
+		}
+		if !retryableStatus(response.StatusCode) || retries == maxRetries {
+			return response, nil
+		}
+		_ = response.Body.Close()
+		if err := waitForRetry(ctx, client.configuredRetryDelay(retries+1)); err != nil {
+			return nil, err
+		}
+	}
+}
+
+func retryableStatus(status int) bool {
+	return status == http.StatusBadGateway ||
+		status == http.StatusServiceUnavailable ||
+		status == http.StatusGatewayTimeout
+}
+
+func (client Client) configuredRetryDelay(attempt int) time.Duration {
+	if client.RetryDelay != nil {
+		delay := client.RetryDelay(attempt)
+		if delay > 0 {
+			return delay
+		}
+		return 0
+	}
+	return time.Second << (attempt - 1)
+}
+
+func waitForRetry(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func safePathSegments(filePath string) ([]string, error) {

@@ -142,6 +142,168 @@ func TestParseFileRejectsMalformedOrUnresolvedInput(t *testing.T) {
 	}
 }
 
+func TestParseFileRejectsUnresolvedBoundaryInterpolation(t *testing.T) {
+	tests := map[string]struct {
+		contents   string
+		diagnostic string
+	}{
+		"short volume source": {
+			contents:   "services:\n  web:\n    image: nginx\n    volumes:\n      - ${UPLOAD_LOCATION}/photos:/data\n",
+			diagnostic: "parse compose file: unresolved boundary interpolation in services.web.volumes",
+		},
+		"long volume source": {
+			contents: "services:\n  web:\n    image: nginx\n    volumes:\n" +
+				"      - type: bind\n        source: ${SOURCE}\n        target: /data\n",
+			diagnostic: "parse compose file: unresolved boundary interpolation in services.web.volumes",
+		},
+		"short published port": {
+			contents:   "services:\n  web:\n    image: nginx\n    ports:\n      - ${PUBLISHED}:80\n",
+			diagnostic: "parse compose file: unresolved boundary interpolation in services.web.ports",
+		},
+		"long published port": {
+			contents: "services:\n  web:\n    image: nginx\n    ports:\n" +
+				"      - target: 80\n        published: ${PUBLISHED}\n",
+			diagnostic: "parse compose file: unresolved boundary interpolation in services.web.ports",
+		},
+		"network": {
+			contents:   "services:\n  web:\n    image: nginx\n    networks:\n      - ${NETWORK}\n",
+			diagnostic: "parse compose file: unresolved boundary interpolation in services.web.networks",
+		},
+		"network mode": {
+			contents:   "services:\n  web:\n    image: nginx\n    network_mode: ${NETWORK_MODE}\n",
+			diagnostic: "parse compose file: unresolved boundary interpolation in services.web.network_mode",
+		},
+		"privileged": {
+			contents:   "services:\n  web:\n    image: nginx\n    privileged: ${PRIVILEGED}\n",
+			diagnostic: "parse compose file: unresolved boundary interpolation in services.web.privileged",
+		},
+		"nested volume default": {
+			contents: "services:\n  web:\n    image: nginx\n    volumes:\n" +
+				"      - ${SOURCE:-/srv/${TENANT}}:/data\n",
+			diagnostic: "parse compose file: unresolved boundary interpolation in services.web.volumes",
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			path := writeCompose(t, t.TempDir(), "compose.yaml", test.contents)
+			_, err := composeparser.ParseFile(context.Background(), path)
+			var incomplete *composeparser.IncompleteError
+			if !errors.As(err, &incomplete) {
+				t.Fatalf("error = %v, want *compose.IncompleteError", err)
+			}
+			if incomplete.Error() != test.diagnostic {
+				t.Fatalf("error = %q, want %q", incomplete.Error(), test.diagnostic)
+			}
+		})
+	}
+}
+
+func TestParseFileUsesDeterministicBoundaryInterpolationDiagnostic(t *testing.T) {
+	path := writeCompose(t, t.TempDir(), "compose.yaml", `
+services:
+  zed:
+    image: nginx
+    volumes:
+      - ${ZED_PATH}/data:/data
+  alpha:
+    image: nginx
+    networks:
+      - ${ALPHA_NETWORK}
+    ports:
+      - ${ALPHA_PORT}:80
+`)
+
+	_, err := composeparser.ParseFile(context.Background(), path)
+	var incomplete *composeparser.IncompleteError
+	if !errors.As(err, &incomplete) {
+		t.Fatalf("error = %v, want *compose.IncompleteError", err)
+	}
+	if got, want := incomplete.Error(), "parse compose file: unresolved boundary interpolation in services.alpha.ports"; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
+	}
+}
+
+func TestParseFileResolvesInlineBoundaryDefaults(t *testing.T) {
+	path := writeCompose(t, t.TempDir(), "compose.yaml", `
+services:
+  web:
+    image: nginx
+    ports:
+      - ${PUBLISHED:-8080}:80
+    volumes:
+      - ${SOURCE:-./data}:/data
+`)
+
+	revision, err := composeparser.ParseFile(context.Background(), path)
+	if err != nil {
+		t.Fatalf("ParseFile() error = %v", err)
+	}
+	web := serviceNamed(t, revision, "web")
+	if len(web.Bindings) != 1 || web.Bindings[0].Published != "8080" {
+		t.Fatalf("bindings = %#v, want inline published-port default", web.Bindings)
+	}
+	if len(web.Mounts) != 1 || web.Mounts[0].Source != "./data" {
+		t.Fatalf("mounts = %#v, want inline source default", web.Mounts)
+	}
+}
+
+func TestParseFileAllowsUnresolvedNonBoundaryInterpolation(t *testing.T) {
+	path := writeCompose(t, t.TempDir(), "compose.yaml", `
+services:
+  web:
+    image: nginx-${TAG}
+    command: ["sh", "-c", "echo ${MESSAGE}"]
+    environment:
+      VALUE: ${VALUE}
+    healthcheck:
+      test: ["CMD-SHELL", "echo ${CHECK}"]
+    ports:
+      - 127.0.0.1:8080:80
+`)
+
+	revision, err := composeparser.ParseFile(context.Background(), path)
+	if err != nil {
+		t.Fatalf("ParseFile() error = %v", err)
+	}
+	if !revision.Complete {
+		t.Fatal("revision.Complete = false, want true")
+	}
+}
+
+func TestParseFileAllowsUnresolvedIgnoredBoundaryMetadata(t *testing.T) {
+	path := writeCompose(t, t.TempDir(), "compose.yaml", `
+services:
+  web:
+    image: nginx
+    ports:
+      - name: web-${PORT_NAME}
+        target: 80
+        published: "8080"
+        app_protocol: app-${APP_PROTOCOL}
+    networks:
+      default:
+        aliases:
+          - web-${NETWORK_ALIAS}
+    volumes:
+      - type: volume
+        source: data
+        target: /data
+        volume:
+          subpath: tenant-${VOLUME_SUBPATH}
+volumes:
+  data:
+`)
+
+	revision, err := composeparser.ParseFile(context.Background(), path)
+	if err != nil {
+		t.Fatalf("ParseFile() error = %v", err)
+	}
+	if !revision.Complete {
+		t.Fatal("revision.Complete = false, want true")
+	}
+}
+
 func TestParseFileUsesStableLoaderDiagnostic(t *testing.T) {
 	path := writeCompose(t, t.TempDir(), "compose.yaml", `
 services:
@@ -161,7 +323,7 @@ services:
 	if !errors.As(err, &incomplete) {
 		t.Fatalf("error = %v, want *compose.IncompleteError", err)
 	}
-	if got, want := incomplete.Error(), "parse compose file: invalid or unresolved Compose model"; got != want {
+	if got, want := incomplete.Error(), "parse compose file: unresolved boundary interpolation in services.first.volumes"; got != want {
 		t.Fatalf("error = %q, want %q", got, want)
 	}
 }

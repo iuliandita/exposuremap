@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/iuliandita/exposuremap/internal/githubapi"
 )
@@ -106,7 +107,9 @@ func TestListPullRequestsForCommitSkipsUnmerged(t *testing.T) {
 }
 
 func TestClientReturnsTypedAPIError(t *testing.T) {
+	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		requests++
 		response.WriteHeader(http.StatusForbidden)
 		fmt.Fprint(response, `{"message":"rate limited"}`)
 	}))
@@ -120,6 +123,78 @@ func TestClientReturnsTypedAPIError(t *testing.T) {
 	}
 	if apiError.StatusCode != http.StatusForbidden || apiError.Message != "rate limited" {
 		t.Fatalf("APIError = %#v", apiError)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want 1", requests)
+	}
+}
+
+func TestClientRetriesTransientServerErrors(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		requests++
+		if requests < 3 {
+			response.WriteHeader(http.StatusBadGateway)
+			fmt.Fprintf(response, `{"message":"transient %d"}`, requests)
+			return
+		}
+		fmt.Fprint(response, `{"type":"file","sha":"blob","size":1,"encoding":"base64","content":"eA=="}`)
+	}))
+	t.Cleanup(server.Close)
+
+	client := testClient(t, server)
+	file, err := client.GetFile(
+		context.Background(), "acme", "widget", strings.Repeat("a", 40), "compose.yaml", 1,
+	)
+	if err != nil {
+		t.Fatalf("GetFile() error = %v", err)
+	}
+	if requests != 3 || string(file.Content) != "x" {
+		t.Fatalf("requests = %d, file = %#v; want 3 requests and decoded content", requests, file)
+	}
+}
+
+func TestClientReturnsFinalTransientErrorAfterRetryLimit(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		requests++
+		response.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprintf(response, `{"message":"attempt %d"}`, requests)
+	}))
+	t.Cleanup(server.Close)
+
+	client := testClient(t, server)
+	_, err := client.ListCommitsForPath(context.Background(), "acme", "widget", "main", "compose.yaml", 1)
+	var apiError *githubapi.APIError
+	if !errors.As(err, &apiError) {
+		t.Fatalf("error = %v, want *APIError", err)
+	}
+	if requests != 3 || apiError.StatusCode != http.StatusServiceUnavailable || apiError.Message != "attempt 3" {
+		t.Fatalf("requests = %d, APIError = %#v; want final error after 3 requests", requests, apiError)
+	}
+}
+
+func TestClientStopsRetryingWhenContextIsCanceled(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		requests++
+		response.WriteHeader(http.StatusGatewayTimeout)
+		fmt.Fprint(response, `{"message":"transient"}`)
+	}))
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	client := testClient(t, server)
+	client.RetryDelay = func(int) time.Duration {
+		cancel()
+		return time.Hour
+	}
+	_, err := client.ListCommitsForPath(ctx, "acme", "widget", "main", "compose.yaml", 1)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ListCommitsForPath() error = %v, want context cancellation", err)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want 1", requests)
 	}
 }
 
@@ -341,6 +416,7 @@ func testClient(t *testing.T, server *httptest.Server) githubapi.Client {
 		BaseURL:    baseURL,
 		Token:      "test-token",
 		HTTPClient: server.Client(),
+		RetryDelay: func(int) time.Duration { return 0 },
 	}
 }
 
