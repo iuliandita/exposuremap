@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -57,7 +58,7 @@ func TestBenchmarkMineCommandWritesPrivateCorpus(t *testing.T) {
 		Repositories: []benchmark.Seed{{
 			Repository:     "https://github.com/acme/widget",
 			DefaultBranch:  "main",
-			CandidatePaths: []string{"compose.yaml"},
+			CandidatePaths: []string{"compose.yaml", "Dockerfile"},
 			LicenseURL:     "https://github.com/acme/widget/blob/main/LICENSE",
 			LicenseSPDX:    "MIT",
 		}},
@@ -86,6 +87,8 @@ func TestBenchmarkMineCommandWritesPrivateCorpus(t *testing.T) {
 		"--split", "training",
 		"--commits-per-path", "1",
 		"--limit", "1",
+		"--balanced",
+		"--compose-only",
 	}, &stdout, &stderr, dependencies)
 
 	if code != 0 || stderr.Len() != 0 {
@@ -98,6 +101,9 @@ func TestBenchmarkMineCommandWritesPrivateCorpus(t *testing.T) {
 	readJSON(t, outputPath, &corpus)
 	if len(corpus.Cases) != 1 || corpus.Cases[0].PullRequest != 7 {
 		t.Fatalf("mined corpus = %#v", corpus)
+	}
+	if !slices.Equal(client.commitPaths, []string{"compose.yaml"}) {
+		t.Fatalf("commit paths = %#v, want Compose path only", client.commitPaths)
 	}
 	info, err := os.Stat(outputPath)
 	if err != nil {
@@ -255,6 +261,81 @@ func TestBenchmarkMaterializeCommandPropagatesFetchFailure(t *testing.T) {
 	}
 }
 
+func TestBenchmarkRunCommandWritesEvaluationBundle(t *testing.T) {
+	directory := t.TempDir()
+	corpus := oneCaseCorpus()
+	corpusPath := filepath.Join(directory, "corpus.json")
+	cachePath := filepath.Join(directory, "cases")
+	outputPath := filepath.Join(directory, "run")
+	writeJSON(t, corpusPath, corpus)
+	client := &cliContentClient{files: map[string]githubapi.File{
+		corpus.Cases[0].BaseSHA: {
+			BlobSHA: "base-blob",
+			Content: []byte("services:\n  web:\n    image: example/web:1\n"),
+		},
+		corpus.Cases[0].HeadSHA: {
+			BlobSHA: "head-blob",
+			Content: []byte("services:\n  web:\n    image: example/web:1\n    ports: ['127.0.0.1:8080:80']\n"),
+		},
+	}}
+	if _, err := benchmark.Materialize(context.Background(), client, corpus, cachePath); err != nil {
+		t.Fatalf("Materialize() error = %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := cli.Run([]string{
+		"benchmark", "run",
+		"--corpus", corpusPath,
+		"--cases", cachePath,
+		"--out", outputPath,
+	}, &stdout, &stderr)
+
+	if code != 0 || stderr.Len() != 0 || !strings.Contains(stdout.String(), `"cases": 1`) {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	var results []review.Result
+	readJSON(t, filepath.Join(outputPath, "results.json"), &results)
+	if len(results) != 1 || results[0].CaseID != corpus.Cases[0].ID || len(results[0].Findings) != 1 {
+		t.Fatalf("results = %#v", results)
+	}
+}
+
+func TestBenchmarkMutateCommandWritesFourRuleBundle(t *testing.T) {
+	directory := t.TempDir()
+	corpus := oneCaseCorpus()
+	corpusPath := filepath.Join(directory, "corpus.json")
+	cachePath := filepath.Join(directory, "cases")
+	outputPath := filepath.Join(directory, "mutations")
+	writeJSON(t, corpusPath, corpus)
+	client := &cliContentClient{files: map[string]githubapi.File{
+		corpus.Cases[0].BaseSHA: {BlobSHA: "base-blob", Content: []byte("services:\n  web:\n    image: example/web:1\n")},
+		corpus.Cases[0].HeadSHA: {BlobSHA: "head-blob", Content: []byte("services:\n  web:\n    image: example/web:1\n")},
+	}}
+	if _, err := benchmark.Materialize(context.Background(), client, corpus, cachePath); err != nil {
+		t.Fatalf("Materialize() error = %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := cli.Run([]string{
+		"benchmark", "mutate",
+		"--corpus", corpusPath,
+		"--cases", cachePath,
+		"--out", outputPath,
+		"--count-per-rule", "1",
+	}, &stdout, &stderr)
+
+	if code != 0 || stderr.Len() != 0 || !strings.Contains(stdout.String(), `"cases": 4`) {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	var mutations benchmark.Corpus
+	readJSON(t, filepath.Join(outputPath, "corpus.json"), &mutations)
+	if len(mutations.Cases) != 4 {
+		t.Fatalf("mutations = %#v", mutations)
+	}
+}
+
 func oneCaseCorpus() benchmark.Corpus {
 	return benchmark.Corpus{
 		SchemaVersion: 1,
@@ -296,14 +377,18 @@ func readJSON(t *testing.T, path string, destination any) {
 	}
 }
 
-type cliHistoryClient struct{}
+type cliHistoryClient struct {
+	commitPaths []string
+}
 
-func (*cliHistoryClient) ListCommitsForPath(
+func (client *cliHistoryClient) ListCommitsForPath(
 	_ context.Context,
 	_, _ string,
-	_, _ string,
+	_ string,
+	path string,
 	_ int,
 ) ([]githubapi.Commit, error) {
+	client.commitPaths = append(client.commitPaths, path)
 	return []githubapi.Commit{{SHA: strings.Repeat("c", 40)}}, nil
 }
 

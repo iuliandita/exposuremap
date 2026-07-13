@@ -10,6 +10,9 @@ import (
 )
 
 const (
+	// RulePackVersion identifies the deterministic Compose boundary rules.
+	RulePackVersion = "compose-v1"
+
 	ruleNewHostPort   = "EM-COMPOSE-001"
 	ruleBindWidened   = "EM-COMPOSE-002"
 	ruleHostNetwork   = "EM-COMPOSE-003"
@@ -19,10 +22,12 @@ const (
 // Compare reports widening changes from base to head.
 func Compare(base, head graph.Revision) []report.Finding {
 	baseServices := serviceIndex(base)
+	baseExposures := hostExposureSet(base)
+	headExposures := hostExposureSet(head)
 	findings := make([]report.Finding, 0)
 	for _, headService := range head.Services {
 		baseService := baseServices[headService.Name]
-		findings = append(findings, compareBindings(baseService, headService)...)
+		findings = append(findings, compareBindings(baseService, headService, baseExposures, headExposures)...)
 		if headService.HostNetwork && !baseService.HostNetwork {
 			findings = append(findings, report.Finding{
 				RuleID:      ruleHostNetwork,
@@ -43,7 +48,10 @@ func Compare(base, head graph.Revision) []report.Finding {
 	return report.SortFindings(findings)
 }
 
-func compareBindings(base, head graph.Service) []report.Finding {
+func compareBindings(
+	base, head graph.Service,
+	baseExposures, headExposures map[string]struct{},
+) []report.Finding {
 	baseBySocket := make(map[string][]graph.Binding, len(base.Bindings))
 	for _, binding := range base.Bindings {
 		key := socketKey(binding)
@@ -52,10 +60,17 @@ func compareBindings(base, head graph.Service) []report.Finding {
 	result := make([]report.Finding, 0)
 	emittedWidening := make(map[string]struct{})
 	emittedPort := make(map[string]struct{})
+	consumedReplacements := make(map[string]struct{})
 	for _, binding := range head.Bindings {
 		key := socketKey(binding)
 		baseBindings := baseBySocket[key]
 		if len(baseBindings) == 0 {
+			if _, exists := baseExposures[hostExposureKey(binding)]; exists {
+				continue
+			}
+			if replacedBinding(base.Bindings, binding, headExposures, consumedReplacements) {
+				continue
+			}
 			if _, exists := emittedPort[key]; exists {
 				continue
 			}
@@ -102,6 +117,30 @@ func compareBindings(base, head graph.Service) []report.Finding {
 		}
 	}
 	return result
+}
+
+func replacedBinding(
+	baseBindings []graph.Binding,
+	headBinding graph.Binding,
+	headExposures map[string]struct{},
+	consumed map[string]struct{},
+) bool {
+	for _, baseBinding := range baseBindings {
+		if baseBinding.Target != headBinding.Target || baseBinding.Protocol != headBinding.Protocol ||
+			hostScope(baseBinding.HostIP) != hostScope(headBinding.HostIP) {
+			continue
+		}
+		key := hostExposureKey(baseBinding)
+		if _, stillExposed := headExposures[key]; stillExposed {
+			continue
+		}
+		if _, used := consumed[key]; used {
+			continue
+		}
+		consumed[key] = struct{}{}
+		return true
+	}
+	return false
 }
 
 func containsWildcard(bindings []graph.Binding) bool {
@@ -165,6 +204,30 @@ func serviceIndex(revision graph.Revision) map[string]graph.Service {
 		result[service.Name] = service
 	}
 	return result
+}
+
+func hostExposureSet(revision graph.Revision) map[string]struct{} {
+	result := make(map[string]struct{})
+	for _, service := range revision.Services {
+		for _, binding := range service.Bindings {
+			result[hostExposureKey(binding)] = struct{}{}
+		}
+	}
+	return result
+}
+
+func hostExposureKey(binding graph.Binding) string {
+	return fmt.Sprintf("%s|%s|%s", hostScope(binding.HostIP), binding.Published, binding.Protocol)
+}
+
+func hostScope(host string) string {
+	if graph.IsWildcardHost(host) {
+		return "wildcard"
+	}
+	if graph.IsLoopbackHost(host) {
+		return "loopback"
+	}
+	return "address:" + strings.Trim(host, "[]")
 }
 
 func socketKey(binding graph.Binding) string {

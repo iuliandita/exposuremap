@@ -136,6 +136,31 @@ func TestCompareTreatsExistingSensitiveMountAsUnchanged(t *testing.T) {
 	}
 }
 
+func TestCompareDoesNotTreatPortRenumberAsBoundaryWidening(t *testing.T) {
+	base := revision(graph.Service{Name: "redis", Bindings: []graph.Binding{{
+		HostIP: "127.0.0.1", Published: "6479", Target: 6379,
+	}}})
+	head := revision(graph.Service{Name: "redis", Bindings: []graph.Binding{{
+		HostIP: "127.0.0.1", Published: "6379", Target: 6379,
+	}}})
+
+	if findings := analyze.Compare(base, head); len(findings) != 0 {
+		t.Fatalf("findings = %#v, want none for one-for-one port renumber", findings)
+	}
+}
+
+func TestComparePreservesHostExposureAcrossServiceRename(t *testing.T) {
+	base := revision(
+		graph.Service{Name: "backend", Bindings: []graph.Binding{{Published: "8080", Target: 8080}}},
+		graph.Service{Name: "frontend", Bindings: []graph.Binding{{Published: "3000", Target: 80}}},
+	)
+	head := revision(graph.Service{Name: "stirling-pdf", Bindings: []graph.Binding{{Published: "8080", Target: 8080}}})
+
+	if findings := analyze.Compare(base, head); len(findings) != 0 {
+		t.Fatalf("findings = %#v, want none when the host binding survives a service rename", findings)
+	}
+}
+
 func revision(services ...graph.Service) graph.Revision {
 	return graph.Normalize(graph.Revision{Complete: true, Services: services})
 }

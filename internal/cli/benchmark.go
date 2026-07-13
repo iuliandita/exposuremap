@@ -13,7 +13,9 @@ import (
 	"strings"
 
 	"github.com/iuliandita/exposuremap/internal/benchmark"
+	"github.com/iuliandita/exposuremap/internal/evaluate"
 	"github.com/iuliandita/exposuremap/internal/githubapi"
+	"github.com/iuliandita/exposuremap/internal/mutate"
 	"github.com/iuliandita/exposuremap/internal/review"
 )
 
@@ -52,7 +54,7 @@ func normalizeDependencies(dependencies Dependencies) Dependencies {
 
 func runBenchmark(args []string, stdout, stderr io.Writer, dependencies Dependencies) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "benchmark subcommand is required: validate, mine, materialize, or score")
+		fmt.Fprintln(stderr, "benchmark subcommand is required: validate, mine, materialize, mutate, run, or score")
 		return 2
 	}
 	switch args[0] {
@@ -62,12 +64,89 @@ func runBenchmark(args []string, stdout, stderr io.Writer, dependencies Dependen
 		return runBenchmarkMine(args[1:], stdout, stderr, dependencies)
 	case "materialize":
 		return runBenchmarkMaterialize(args[1:], stdout, stderr, dependencies)
+	case "mutate":
+		return runBenchmarkMutate(args[1:], stdout, stderr)
+	case "run":
+		return runBenchmarkRun(args[1:], stdout, stderr)
 	case "score":
 		return runBenchmarkScore(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown benchmark subcommand %q\n", args[0])
 		return 2
 	}
+}
+
+func runBenchmarkMutate(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("benchmark mutate", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	corpusPath := flags.String("corpus", "", "path to a source corpus JSON file")
+	casesPath := flags.String("cases", "", "directory containing source materializations")
+	outputPath := flags.String("out", "", "new directory for the mutation bundle")
+	countPerRule := flags.Int("count-per-rule", 5, "number of mutations generated for each rule")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if *corpusPath == "" || *casesPath == "" || *outputPath == "" || *countPerRule <= 0 || flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "benchmark mutate requires --corpus PATH --cases DIR --out DIR and a positive --count-per-rule")
+		return 2
+	}
+	var corpus benchmark.Corpus
+	if err := decodeJSONFile(*corpusPath, &corpus); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	bundle, err := mutate.Generate(context.Background(), *casesPath, corpus, *countPerRule)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	if err := mutate.WriteBundle(*outputPath, bundle); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	summary := struct {
+		Cases  int    `json:"cases"`
+		Output string `json:"output"`
+	}{Cases: len(bundle.Corpus.Cases), Output: *outputPath}
+	if err := encodeJSON(stdout, summary); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	return 0
+}
+
+func runBenchmarkRun(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("benchmark run", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	corpusPath := flags.String("corpus", "", "path to a corpus JSON file")
+	casesPath := flags.String("cases", "", "directory containing materialized cases")
+	outputPath := flags.String("out", "", "new directory for evaluation artifacts")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if *corpusPath == "" || *casesPath == "" || *outputPath == "" || flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "benchmark run requires --corpus PATH --cases DIR --out DIR")
+		return 2
+	}
+	var corpus benchmark.Corpus
+	if err := decodeJSONFile(*corpusPath, &corpus); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	bundle, err := evaluate.Build(context.Background(), *casesPath, corpus)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	if err := evaluate.WriteBundle(*outputPath, bundle); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	if err := encodeJSON(stdout, bundle.Summary); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	return 0
 }
 
 func runBenchmarkMaterialize(args []string, stdout, stderr io.Writer, dependencies Dependencies) int {
@@ -143,6 +222,8 @@ func runBenchmarkMine(args []string, stdout, stderr io.Writer, dependencies Depe
 	splitName := flags.String("split", "", "training, validation, or evaluation")
 	commitsPerPath := flags.Int("commits-per-path", 50, "maximum commits inspected per candidate path")
 	caseLimit := flags.Int("limit", 100, "maximum cases written")
+	balanced := flags.Bool("balanced", false, "select cases in repository round-robin order")
+	composeOnly := flags.Bool("compose-only", false, "keep cases with exactly one Compose path")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -168,6 +249,11 @@ func runBenchmarkMine(args []string, stdout, stderr io.Writer, dependencies Depe
 	client := dependencies.NewHistoryClient(dependencies.Getenv("GITHUB_TOKEN"))
 	corpus := benchmark.Corpus{SchemaVersion: 1}
 	for _, seed := range manifest.Repositories {
+		if *composeOnly {
+			seed.CandidatePaths = slices.DeleteFunc(slices.Clone(seed.CandidatePaths), func(candidate string) bool {
+				return !benchmark.ComposePath(candidate)
+			})
+		}
 		cases, err := benchmark.Mine(
 			context.Background(),
 			client,
@@ -182,17 +268,24 @@ func runBenchmarkMine(args []string, stdout, stderr io.Writer, dependencies Depe
 		}
 		corpus.Cases = append(corpus.Cases, cases...)
 	}
-	slices.SortFunc(corpus.Cases, func(left, right benchmark.Case) int {
-		if left.MergedAt.After(right.MergedAt) {
-			return -1
+	if *composeOnly {
+		corpus.Cases = benchmark.ComposeCases(corpus.Cases)
+	}
+	if *balanced {
+		corpus.Cases = benchmark.SelectBalanced(corpus.Cases, *caseLimit)
+	} else {
+		slices.SortFunc(corpus.Cases, func(left, right benchmark.Case) int {
+			if left.MergedAt.After(right.MergedAt) {
+				return -1
+			}
+			if left.MergedAt.Before(right.MergedAt) {
+				return 1
+			}
+			return strings.Compare(left.ID, right.ID)
+		})
+		if len(corpus.Cases) > *caseLimit {
+			corpus.Cases = corpus.Cases[:*caseLimit]
 		}
-		if left.MergedAt.Before(right.MergedAt) {
-			return 1
-		}
-		return strings.Compare(left.ID, right.ID)
-	})
-	if len(corpus.Cases) > *caseLimit {
-		corpus.Cases = corpus.Cases[:*caseLimit]
 	}
 	if problems := benchmark.Validate(corpus); len(problems) > 0 {
 		fmt.Fprintf(stderr, "mined corpus is invalid: %s %s\n", problems[0].Field, problems[0].Message)

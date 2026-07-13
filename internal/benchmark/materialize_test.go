@@ -98,6 +98,37 @@ func TestMaterializeReusesOnlyVerifiedCache(t *testing.T) {
 	}
 }
 
+func TestVerifyMaterializedAcceptsValidCacheAndRejectsTampering(t *testing.T) {
+	corpus := materializeCorpus([]string{"compose.yaml"})
+	client := &fakeContentClient{files: map[string]githubapi.File{}}
+	for _, sha := range []string{strings.Repeat("a", 40), strings.Repeat("b", 40)} {
+		client.files[sha+"|compose.yaml"] = githubapi.File{
+			BlobSHA: "blob-" + sha[:1],
+			Content: []byte("services: {}\n# " + sha),
+		}
+	}
+	output := filepath.Join(t.TempDir(), "cache")
+	if _, err := benchmark.Materialize(context.Background(), client, corpus, output); err != nil {
+		t.Fatalf("Materialize() error = %v", err)
+	}
+
+	manifest, err := benchmark.VerifyMaterialized(output, corpus.Cases[0])
+	if err != nil {
+		t.Fatalf("VerifyMaterialized() error = %v", err)
+	}
+	if manifest.CaseID != corpus.Cases[0].ID || manifest.Base.Files[0].BlobSHA != "blob-a" {
+		t.Fatalf("manifest = %#v", manifest)
+	}
+
+	basePath := filepath.Join(output, corpus.Cases[0].ID, "base", "compose.yaml")
+	if err := os.WriteFile(basePath, []byte("tampered"), 0o600); err != nil {
+		t.Fatalf("tamper cache: %v", err)
+	}
+	if _, err := benchmark.VerifyMaterialized(output, corpus.Cases[0]); err == nil || !strings.Contains(err.Error(), "checksum") {
+		t.Fatalf("VerifyMaterialized() error = %v, want checksum failure", err)
+	}
+}
+
 func TestMaterializeRejectsUnsafeAndExcessiveCasesBeforeFetching(t *testing.T) {
 	tests := map[string]benchmark.Corpus{
 		"unsafe case id": materializeCorpusWithID("../escape", []string{"compose.yaml"}),

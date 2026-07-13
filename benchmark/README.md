@@ -35,8 +35,12 @@ go run ./cmd/exposuremap benchmark mine \
   --out corpus.json \
   --split training \
   --commits-per-path 50 \
-  --limit 100
+  --limit 100 \
+  --balanced \
+  --compose-only
 ```
+
+`--balanced` selects cases in repository round-robin order so one active repository cannot dominate the limit. `--compose-only` retains cases with exactly one recognized Compose path, which matches the current analyzer slice. Omit it when mining future Dockerfile or proxy-parser corpora.
 
 The output file is created atomically with mode `0600` because private-repository metadata may be supported later.
 
@@ -73,6 +77,35 @@ Exit codes:
 - `2`: invalid invocation, unreadable input, malformed JSON, API failure, or inconsistent review data.
 
 Validation rejects unsupported schema versions, invalid or identical SHAs, duplicate case IDs, unsafe paths, missing license metadata, mutations without an expected boundary, and repositories leaking across dataset splits.
+
+## Evaluation runs
+
+The batch runner verifies every cached manifest and checksum before analysis, then writes a new output directory atomically:
+
+```sh
+go run ./cmd/exposuremap benchmark run \
+  --corpus corpus.json \
+  --cases docs/local/cases \
+  --out docs/local/evaluation/run-1
+```
+
+The bundle contains `results.json`, `summary.json`, and JSON/Markdown reports under `reports/`. Existing output directories are never overwritten. Cases with zero or multiple Compose paths are recorded as `incomplete`; cache-integrity failures stop the run.
+
+## Controlled mutations
+
+Generate balanced parser-to-rule mutations from complete training revisions:
+
+```sh
+go run ./cmd/exposuremap benchmark mutate \
+  --corpus corpus.json \
+  --cases docs/local/cases \
+  --out docs/local/evaluation/mutations \
+  --count-per-rule 5
+```
+
+The generated directory contains its own `corpus.json` and checksum-verifiable `cases/` cache. Mutations append one isolated synthetic service to a real training Compose document and never execute the source. The four current mutation families cover a new wildcard host port, loopback-to-wildcard widening, host networking, and privileged or Docker-socket access on a host-exposed service.
+
+`--count-per-rule` must be between 1 and 100.
 
 ## Blinded review
 
