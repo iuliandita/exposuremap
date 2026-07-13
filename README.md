@@ -2,7 +2,7 @@
 
 ExposureMap compares two revisions of container configuration and explains changes to reachability and compromise blast radius.
 
-The project is an early prototype. It has a warning-only, single-file Docker Compose analyzer plus the public-corpus and blinded-review workflow used to measure precision before any hosted service is built.
+The project is an early prototype. It has a warning-only, single-file Docker Compose analyzer plus a public corpus and independent-review workflow used to measure completeness, precision, and report usefulness.
 
 ## The review question
 
@@ -51,7 +51,7 @@ go run ./cmd/exposuremap diff \
 
 Use `--format markdown` for a review-oriented report. Complete analyses are deliberately reported as `warn`, even with no findings. Unsupported or unresolved inputs are `incomplete`. Both exit `0`; this prototype cannot become an accidental CI gate. Invalid invocations and output failures exit `2`.
 
-Compose overrides, includes, extends, profiles, label files, Dockerfiles, proxy configuration, and policy are not analyzed yet. Service-level `env_file` declarations are accepted as container-environment metadata, but the referenced files are never read and their values do not affect the graph. The adapter rejects other external Compose inputs instead of reading them implicitly. Static nginx is planned after the first release. Kubernetes, Terraform, live Docker state, firewalls, DNS, Nginx Proxy Manager, and Apache are outside the first release.
+Compose overrides, includes, extends, profiles, label files, Dockerfiles, proxy configuration, policy, nginx, Kubernetes, Terraform, live Docker state, firewalls, DNS, Nginx Proxy Manager, and Apache are outside the current analyzer slice. Service-level `env_file` declarations are accepted as container-environment metadata, but the referenced files are never read and their values do not affect the graph. The adapter rejects other external Compose inputs instead of reading them implicitly.
 
 ## What exists now
 
@@ -88,4 +88,4 @@ A report with no findings means only "no warning-level boundary widening was det
 
 ## License
 
-Apache-2.0. The CLI, analyzer, rules, GitHub integration, and API are intended to remain self-hostable.
+Apache-2.0.

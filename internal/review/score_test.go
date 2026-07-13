@@ -307,8 +307,8 @@ func exactGateFixture() (benchmark.Corpus, []review.Result, []review.Assessment)
 				name string
 				role review.Role
 			}{
-				{name: "codex", role: review.RolePrimary},
-				{name: "claude", role: review.RoleSecondary},
+				{name: "reviewer-primary", role: review.RolePrimary},
+				{name: "reviewer-secondary", role: review.RoleSecondary},
 			} {
 				assessments = append(assessments, review.Assessment{
 					SchemaVersion:       1,

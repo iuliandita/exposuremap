@@ -140,8 +140,8 @@ func TestBenchmarkScoreCommand(t *testing.T) {
 		name string
 		role review.Role
 	}{
-		{file: "primary.json", name: "codex", role: review.RolePrimary},
-		{file: "secondary.json", name: "claude", role: review.RoleSecondary},
+		{file: "primary.json", name: "reviewer-primary", role: review.RolePrimary},
+		{file: "secondary.json", name: "reviewer-secondary", role: review.RoleSecondary},
 	} {
 		writeJSON(t, filepath.Join(reviewsPath, reviewer.file), review.Assessment{
 			SchemaVersion:       1,
