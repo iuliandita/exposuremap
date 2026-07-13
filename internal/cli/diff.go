@@ -46,7 +46,7 @@ func runDiff(args []string, stdout, stderr io.Writer) int {
 		}
 		result = report.Incomplete(diagnostics...)
 	} else {
-		result = report.Complete(analyze.Compare(base, head))
+		result = report.Complete(nil, analyze.Compare(base, head))
 	}
 
 	var err error

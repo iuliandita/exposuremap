@@ -2,6 +2,7 @@ package report_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -9,16 +10,28 @@ import (
 )
 
 func TestRenderJSONIsDeterministicAndSortsFindings(t *testing.T) {
-	input := report.Complete([]report.Finding{
-		{RuleID: "EM-COMPOSE-003", Title: "Host mode", Service: "z", Evidence: "host", Severity: "high", Confidence: "high"},
-		{RuleID: "EM-COMPOSE-001", Title: "New port", Service: "a", Evidence: "*:80", Severity: "medium", Confidence: "high"},
-	})
+	input := report.Complete(
+		[]report.Change{
+			{Kind: report.ChangePeerPathRemoved, Source: "z", Network: "omega", Target: "db", Base: "z -> omega -> db", Head: "peer path absent"},
+			{Kind: report.ChangePeerPathAdded, Source: "a", Network: "alpha", Target: "api", Base: "peer path absent", Head: "a -> alpha -> api"},
+		},
+		[]report.Finding{
+			{RuleID: "EM-COMPOSE-003", Title: "Host mode", Service: "z", Evidence: "host", Severity: "high", Confidence: "high"},
+			{RuleID: "EM-COMPOSE-001", Title: "New port", Service: "a", Evidence: "*:80", Severity: "medium", Confidence: "high"},
+		},
+	)
 
 	first := renderJSON(t, input)
 	second := renderJSON(t, input)
 
 	if first != second {
 		t.Fatalf("JSON differs between runs:\nfirst: %s\nsecond: %s", first, second)
+	}
+	if !strings.Contains(first, `"schema_version": 2`) {
+		t.Fatalf("schema 2 missing from %s", first)
+	}
+	if strings.Index(first, `"peer-path-added"`) > strings.Index(first, `"peer-path-removed"`) {
+		t.Fatalf("changes are not sorted: %s", first)
 	}
 	if strings.Index(first, "EM-COMPOSE-001") > strings.Index(first, "EM-COMPOSE-003") {
 		t.Fatalf("findings are not sorted: %s", first)
@@ -33,8 +46,29 @@ func TestRenderJSONIsDeterministicAndSortsFindings(t *testing.T) {
 	}
 }
 
+func TestReportCollectionsEncodeAsEmptyArrays(t *testing.T) {
+	for name, value := range map[string]report.Report{
+		"complete":   report.Complete(nil, nil),
+		"incomplete": report.Incomplete("unsupported"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			encoded := renderJSON(t, value)
+			var document map[string]any
+			if err := json.Unmarshal([]byte(encoded), &document); err != nil {
+				t.Fatalf("json.Unmarshal() error = %v", err)
+			}
+			for _, field := range []string{"changes", "findings"} {
+				items, ok := document[field].([]any)
+				if !ok || items == nil || len(items) != 0 {
+					t.Fatalf("%s = %#v, want empty array", field, document[field])
+				}
+			}
+		})
+	}
+}
+
 func TestRenderMarkdownIsStableForCompleteReport(t *testing.T) {
-	input := report.Complete([]report.Finding{{
+	input := report.Complete(nil, []report.Finding{{
 		RuleID: "EM-COMPOSE-001", Title: "New host port published", Severity: "medium", Confidence: "high",
 		Service: "web", Evidence: "*:8080->80/tcp", Base: "binding absent", Head: "*:8080->80/tcp",
 		Remediation: "Remove the binding.",
@@ -79,7 +113,7 @@ func TestRenderMarkdownShowsIncompleteDiagnostics(t *testing.T) {
 }
 
 func TestCompleteReportWithNoFindingsRemainsWarningOnly(t *testing.T) {
-	output := renderMarkdown(t, report.Complete(nil))
+	output := renderMarkdown(t, report.Complete(nil, nil))
 
 	if !strings.Contains(output, "Status: `warn`") || !strings.Contains(output, "No boundary widening was detected within observed inputs.") {
 		t.Fatalf("empty complete report =\n%s", output)

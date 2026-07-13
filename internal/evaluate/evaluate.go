@@ -125,7 +125,7 @@ func RunCase(ctx context.Context, cache string, item benchmark.Case) (Outcome, e
 		return incompleteOutcome(item, diagnostics...), nil
 	}
 
-	analyzerReport := report.Complete(analyze.Compare(base, head))
+	analyzerReport := report.Complete(nil, analyze.Compare(base, head))
 	observed := len(base.Services) + len(head.Services)
 	result := review.Result{
 		CaseID:           item.ID,

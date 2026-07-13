@@ -64,6 +64,10 @@ func RenderMarkdown(writer io.Writer, value Report) error {
 }
 
 func normalizedReport(value Report) Report {
+	value.Changes = SortChanges(value.Changes)
+	if value.Changes == nil {
+		value.Changes = []Change{}
+	}
 	value.Findings = SortFindings(value.Findings)
 	if value.Findings == nil {
 		value.Findings = []Finding{}
