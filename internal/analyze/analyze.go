@@ -11,7 +11,7 @@ import (
 
 const (
 	// RulePackVersion identifies the deterministic Compose boundary rules.
-	RulePackVersion = "compose-v2"
+	RulePackVersion = "compose-v3"
 
 	ruleNewHostPort   = "EM-COMPOSE-001"
 	ruleBindWidened   = "EM-COMPOSE-002"
@@ -57,7 +57,7 @@ func Compare(base, head graph.Revision) Analysis {
 	}
 	findings = append(findings, compareDataServicePaths(base, head)...)
 	return Analysis{
-		Changes:  []report.Change{},
+		Changes:  comparePeerPaths(base, head),
 		Findings: report.SortFindings(findings),
 	}
 }
