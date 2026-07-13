@@ -9,13 +9,17 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/compose-spec/compose-go/v2/loader"
+	"github.com/compose-spec/compose-go/v2/template"
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/iuliandita/exposuremap/internal/graph"
 )
 
 const maxComposeBytes = 1 << 20
+
+var boundaryFields = []string{"ports", "networks", "volumes", "privileged", "network_mode"}
 
 // IncompleteError means the input could not be represented safely and completely.
 type IncompleteError struct {
@@ -47,13 +51,24 @@ func ParseFile(ctx context.Context, filePath string) (graph.Revision, error) {
 		options.SkipResolveEnvironment = true
 		options.SetProjectName("exposuremap", true)
 	}
+	rawOptions := func(raw *loader.Options) {
+		options(raw)
+		raw.SkipInterpolation = true
+		raw.SkipValidation = true
+		raw.SkipConsistencyCheck = true
+		raw.SkipDefaultValues = true
+		raw.SkipNormalization = true
+	}
 
-	model, err := loader.LoadModelWithContext(ctx, details, options)
+	model, err := loader.LoadModelWithContext(ctx, details, rawOptions)
 	if err != nil {
 		return graph.Revision{}, incomplete("parse compose file: invalid or unresolved Compose model")
 	}
 	if reason := unsupportedConstruct(model); reason != "" {
 		return graph.Revision{}, incomplete("unsupported Compose construct: %s", reason)
+	}
+	if field := unresolvedBoundaryField(model); field != "" {
+		return graph.Revision{}, incomplete("parse compose file: unresolved boundary interpolation in %s", field)
 	}
 	project, err := loader.LoadWithContext(ctx, details, options)
 	if err != nil {
@@ -151,6 +166,157 @@ func unsupportedConstruct(model map[string]any) string {
 		}
 	}
 	return ""
+}
+
+func unresolvedBoundaryField(model map[string]any) string {
+	services, _ := model["services"].(map[string]any)
+	serviceNames := make([]string, 0, len(services))
+	for serviceName := range services {
+		serviceNames = append(serviceNames, serviceName)
+	}
+	slices.Sort(serviceNames)
+	for _, serviceName := range serviceNames {
+		service, _ := services[serviceName].(map[string]any)
+		for _, field := range boundaryFields {
+			value, exists := service[field]
+			if exists && containsUnresolvedBoundaryField(field, value) {
+				return fmt.Sprintf("services.%s.%s", serviceName, field)
+			}
+		}
+	}
+	return ""
+}
+
+func containsUnresolvedBoundaryField(field string, value any) bool {
+	switch field {
+	case "ports":
+		return containsUnresolvedSelectedFields(value, []string{"host_ip", "published", "target", "protocol"})
+	case "networks":
+		return containsUnresolvedNetworkName(value)
+	case "volumes":
+		return containsUnresolvedSelectedFields(value, []string{"type", "source", "target", "read_only"})
+	default:
+		return containsUnresolvedInterpolation(value)
+	}
+}
+
+func containsUnresolvedSelectedFields(value any, fields []string) bool {
+	switch typed := value.(type) {
+	case string:
+		return unresolvedInterpolation(typed)
+	case []any:
+		for _, item := range typed {
+			if containsUnresolvedSelectedFields(item, fields) {
+				return true
+			}
+		}
+	case map[string]any:
+		for _, field := range fields {
+			if item, exists := typed[field]; exists && containsUnresolvedInterpolation(item) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func containsUnresolvedNetworkName(value any) bool {
+	switch typed := value.(type) {
+	case string:
+		return unresolvedInterpolation(typed)
+	case []any:
+		for _, item := range typed {
+			if containsUnresolvedNetworkName(item) {
+				return true
+			}
+		}
+	case map[string]any:
+		for network := range typed {
+			if unresolvedInterpolation(network) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func containsUnresolvedInterpolation(value any) bool {
+	switch typed := value.(type) {
+	case string:
+		return unresolvedInterpolation(typed)
+	case []any:
+		for _, item := range typed {
+			if containsUnresolvedInterpolation(item) {
+				return true
+			}
+		}
+	case map[string]any:
+		for key, item := range typed {
+			if unresolvedInterpolation(key) || containsUnresolvedInterpolation(item) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func unresolvedInterpolation(value string) bool {
+	if nestedInterpolation(value) {
+		return true
+	}
+	_, err := template.SubstituteWithOptions(
+		value,
+		func(string) (string, bool) { return "", false },
+		template.WithReplacementFunction(requireResolvedReplacement),
+		template.WithoutLogging,
+	)
+	return err != nil
+}
+
+func requireResolvedReplacement(
+	value string,
+	mapping template.Mapping,
+	config *template.Config,
+) (string, error) {
+	replacement, applied, err := template.DefaultReplacementAppliedFunc(value, mapping, config)
+	if err != nil {
+		return "", err
+	}
+	if !applied {
+		return "", errors.New("unresolved interpolation")
+	}
+	return replacement, nil
+}
+
+func nestedInterpolation(value string) bool {
+	for index := 0; index+1 < len(value); index++ {
+		if value[index] != '$' {
+			continue
+		}
+		if value[index+1] == '$' {
+			index++
+			continue
+		}
+		if value[index+1] != '{' {
+			continue
+		}
+		for nested := index + 2; nested+1 < len(value); nested++ {
+			if value[nested] == '}' {
+				break
+			}
+			if value[nested] != '$' {
+				continue
+			}
+			if value[nested+1] == '$' {
+				nested++
+				continue
+			}
+			if strings.HasPrefix(value[nested:], "${") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func incomplete(format string, arguments ...any) *IncompleteError {
