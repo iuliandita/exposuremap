@@ -23,7 +23,14 @@ ExposureMap will not call a service Internet-accessible unless explicit project 
 
 The current CLI accepts one regular Compose file for each revision. It normalizes services, resolved image references, published ports, Compose networks, bind mounts, privileged mode, and host network mode with the reference `compose-go` loader.
 
-It reports five deterministic change families:
+It emits two informational peer-path change kinds:
+
+- `peer-path-added`: a host-exposed source gained a shared-network route to a distinct peer.
+- `peer-path-removed`: a previously observed host-exposed-source route to a peer disappeared.
+
+Peer changes have no severity, confidence, or remediation. They never affect the exit code or warning scorer.
+
+The five deterministic warning rules are:
 
 - `EM-COMPOSE-001`: new host port.
 - `EM-COMPOSE-002`: loopback binding widened to a wildcard address.
@@ -55,7 +62,7 @@ Compose overrides, includes, extends, profiles, label files, Dockerfiles, proxy 
 - Independent primary/secondary review with required human adjudication.
 - Exact technical gates for completeness, resolution, precision, usefulness, and false CI failures.
 - Immutable case materialization with upstream blob SHAs, local SHA-256 checksums, and bounded private cache files.
-- A deterministic graph, five Compose boundary rules, and stable JSON/Markdown reports.
+- A deterministic graph, informational peer-path changes, five Compose warning rules, and stable JSON/Markdown reports.
 - Atomic benchmark run bundles with scorer-compatible results and per-case review reports.
 - Deterministic training-derived mutations for each implemented rule.
 
@@ -77,7 +84,7 @@ See [benchmark/README.md](benchmark/README.md) for the corpus and reviewer workf
 
 The analyzer will never execute repository code, builds, hooks, containers, Docker, or proxy binaries. It will be deterministic and will not use an LLM for analysis or verdicts.
 
-A report with no findings means only "no boundary regression detected within observed inputs." It is not proof that a deployment is secure. Runtime state, firewall rules, DNS, application authentication, vulnerabilities, and generated configuration may remain unobserved.
+A report with no findings means only "no warning-level boundary widening was detected within observed inputs." Informational changes may still be present, and the report is not proof that a deployment is secure. Runtime state, firewall rules, DNS, application authentication, vulnerabilities, and generated configuration may remain unobserved.
 
 ## License
 
