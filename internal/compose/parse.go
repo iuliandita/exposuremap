@@ -38,7 +38,6 @@ func parseProjectDetails(
 	}
 	options := func(options *loader.Options) {
 		options.ResolvePaths = false
-		options.SkipExtends = true
 		options.SkipResolveEnvironment = true
 		options.SetProjectName("exposuremap", true)
 	}
@@ -142,7 +141,7 @@ func unsupportedConstruct(model map[string]any) string {
 	slices.Sort(serviceNames)
 	for _, serviceName := range serviceNames {
 		service, _ := services[serviceName].(map[string]any)
-		for _, field := range []string{"extends", "label_file"} {
+		for _, field := range []string{"label_file"} {
 			if _, exists := service[field]; exists {
 				return fmt.Sprintf("services.%s.%s", serviceName, field)
 			}

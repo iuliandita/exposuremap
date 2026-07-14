@@ -84,7 +84,6 @@ func TestParseFileRejectsNonRegularAndOversizedInputs(t *testing.T) {
 
 func TestParseFileRejectsUnsupportedExternalInputs(t *testing.T) {
 	tests := map[string]string{
-		"extends":    "services:\n  web:\n    extends:\n      file: other.yaml\n      service: base\n",
 		"label file": "services:\n  web:\n    image: nginx\n    label_file: labels.env\n",
 	}
 

@@ -3,6 +3,7 @@ package compose_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -422,6 +423,286 @@ func TestParseProjectRejectsIncludeSymlinksAndCycles(t *testing.T) {
 		root := t.TempDir()
 		primary := writeProjectCompose(t, root, "compose.yaml", "include:\n  - child.yaml\n")
 		writeProjectCompose(t, root, "child.yaml", "include:\n  - compose.yaml\n")
+		_, err := composeparser.ParseProject(context.Background(), composeparser.ProjectInput{
+			Primary: primary, Root: root,
+		})
+		assertIncomplete(t, err)
+	})
+}
+
+func TestParseProjectExtendsSameFileService(t *testing.T) {
+	root := t.TempDir()
+	primary := writeProjectCompose(t, root, "compose.yaml", `
+services:
+  base:
+    image: example/base:1
+    privileged: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+  web:
+    extends: base
+    image: example/web:1
+    ports:
+      - 8080:80
+  long:
+    extends:
+      service: base
+    privileged: false
+`)
+
+	revision, err := composeparser.ParseProject(context.Background(), composeparser.ProjectInput{
+		Primary: primary, Root: root,
+	})
+	if err != nil {
+		t.Fatalf("ParseProject() error = %v", err)
+	}
+	web := serviceNamed(t, revision, "web")
+	if web.Image != "example/web:1" || !web.Privileged || len(web.Bindings) != 1 ||
+		web.Bindings[0].Published != "8080" || len(web.Mounts) != 1 {
+		t.Fatalf("web = %#v, want same-file inherited facts", web)
+	}
+	long := serviceNamed(t, revision, "long")
+	if long.Image != "example/base:1" || long.Privileged || len(long.Mounts) != 1 {
+		t.Fatalf("long = %#v, want inherited facts and privileged override", long)
+	}
+}
+
+func TestParseProjectExtendsRecursiveExternalServices(t *testing.T) {
+	root := t.TempDir()
+	primary := writeProjectCompose(t, root, "compose.yaml", `
+services:
+  web:
+    extends:
+      file: bases/base.yaml
+      service: middle
+    ports:
+      - ${PUBLISHED}:80
+`)
+	writeProjectCompose(t, root, "bases/base.yaml", `
+services:
+  middle:
+    extends:
+      file: nested/root.yaml
+      service: root
+    privileged: true
+`)
+	writeProjectCompose(t, root, "bases/nested/root.yaml", `
+services:
+  root:
+    image: ${IMAGE}
+    volumes:
+      - ./state:/state
+`)
+
+	revision, err := composeparser.ParseProject(context.Background(), composeparser.ProjectInput{
+		Primary: primary,
+		Root:    root,
+		Variables: map[string]string{
+			"IMAGE": "example/web:1", "PUBLISHED": "8080",
+		},
+	})
+	if err != nil {
+		t.Fatalf("ParseProject() error = %v", err)
+	}
+	web := serviceNamed(t, revision, "web")
+	if web.Image != "example/web:1" || !web.Privileged || len(web.Bindings) != 1 ||
+		web.Bindings[0].Published != "8080" || len(web.Mounts) != 1 {
+		t.Fatalf("web = %#v, want recursive inherited facts", web)
+	}
+}
+
+func TestParseProjectExtendsInOverrideFromProjectDirectory(t *testing.T) {
+	root := t.TempDir()
+	primary := writeProjectCompose(t, root, "compose.yaml", "services: {}\n")
+	override := writeProjectCompose(t, root, "overrides/compose.yaml", `
+services:
+  worker:
+    extends:
+      file: bases.yaml
+      service: base
+`)
+	writeProjectCompose(t, root, "bases.yaml", "services:\n  base:\n    image: example/worker:1\n")
+
+	revision, err := composeparser.ParseProject(context.Background(), composeparser.ProjectInput{
+		Primary: primary, Root: root, Overrides: []string{override},
+	})
+	if err != nil {
+		t.Fatalf("ParseProject() error = %v", err)
+	}
+	if got := serviceNamed(t, revision, "worker").Image; got != "example/worker:1" {
+		t.Fatalf("image = %q, want project-directory external base", got)
+	}
+}
+
+func TestParseProjectExtendsDoesNotImportReferencedResources(t *testing.T) {
+	root := t.TempDir()
+	primary := writeProjectCompose(t, root, "compose.yaml", `
+services:
+  web:
+    extends:
+      file: base.yaml
+      service: base
+`)
+	writeProjectCompose(t, root, "base.yaml", `
+services:
+  base:
+    image: nginx
+    networks: [backend]
+networks:
+  backend: {}
+`)
+
+	_, err := composeparser.ParseProject(context.Background(), composeparser.ProjectInput{
+		Primary: primary, Root: root,
+	})
+	assertIncomplete(t, err)
+}
+
+func TestParseProjectExtendsIgnoresUnusedServiceImports(t *testing.T) {
+	root := t.TempDir()
+	primary := writeProjectCompose(t, root, "compose.yaml", `
+services:
+  web:
+    extends:
+      file: base.yaml
+      service: wanted
+`)
+	writeProjectCompose(t, root, "base.yaml", `
+services:
+  wanted:
+    image: example/web:1
+  unused:
+    extends:
+      file: ../outside.yaml
+      service: unsafe
+`)
+
+	revision, err := composeparser.ParseProject(context.Background(), composeparser.ProjectInput{
+		Primary: primary, Root: root,
+	})
+	if err != nil {
+		t.Fatalf("ParseProject() error = %v", err)
+	}
+	if got := serviceNamed(t, revision, "web").Image; got != "example/web:1" {
+		t.Fatalf("image = %q, want requested external service", got)
+	}
+}
+
+func TestParseProjectRejectsUnsafeExtends(t *testing.T) {
+	tests := map[string]string{
+		"absolute":          "/tmp/base.yaml",
+		"traversal":         "../base.yaml",
+		"remote":            "https://example.invalid/base.yaml",
+		"unbraced variable": "$BASE_FILE",
+		"braced variable":   "${BASE_FILE}",
+		"escaped dollar":    "$$BASE_FILE",
+		"reserved env":      ".env",
+	}
+	for name, reference := range tests {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			primary := writeProjectCompose(t, root, "compose.yaml", fmt.Sprintf(`
+services:
+  web:
+    extends:
+      file: %q
+      service: base
+`, reference))
+			writeProjectCompose(t, root, ".env", "DO_NOT_PRINT=1\n")
+
+			_, err := composeparser.ParseProject(context.Background(), composeparser.ProjectInput{
+				Primary: primary, Root: root,
+			})
+			var incomplete *composeparser.IncompleteError
+			if !errors.As(err, &incomplete) {
+				t.Fatalf("error = %v, want incomplete", err)
+			}
+			for _, forbidden := range []string{root, reference, "DO_NOT_PRINT", "exposuremap-compose-"} {
+				if strings.Contains(incomplete.Error(), forbidden) {
+					t.Fatalf("error leaks %q: %q", forbidden, incomplete.Error())
+				}
+			}
+		})
+	}
+}
+
+func TestParseProjectRejectsMalformedOrMissingExtends(t *testing.T) {
+	tests := map[string]string{
+		"missing service": "services:\n  web:\n    extends:\n      file: base.yaml\n",
+		"invalid mapping": "services:\n  web:\n    extends:\n      service: 42\n",
+		"unknown service": "services:\n  web:\n    extends: missing\n",
+	}
+	for name, contents := range tests {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			primary := writeProjectCompose(t, root, "compose.yaml", contents)
+			writeProjectCompose(t, root, "base.yaml", "services: {}\n")
+			_, err := composeparser.ParseProject(context.Background(), composeparser.ProjectInput{
+				Primary: primary, Root: root,
+			})
+			assertIncomplete(t, err)
+		})
+	}
+}
+
+func TestParseProjectRejectsExtendsSymlinkAndCycles(t *testing.T) {
+	t.Run("symlink", func(t *testing.T) {
+		root := t.TempDir()
+		primary := writeProjectCompose(t, root, "compose.yaml", `
+services:
+  web:
+    extends:
+      file: linked.yaml
+      service: base
+`)
+		target := writeProjectCompose(t, root, "target.yaml", "services:\n  base:\n    image: nginx\n")
+		if err := os.Symlink(target, filepath.Join(root, "linked.yaml")); err != nil {
+			t.Fatalf("Symlink() error = %v", err)
+		}
+		_, err := composeparser.ParseProject(context.Background(), composeparser.ProjectInput{
+			Primary: primary, Root: root,
+		})
+		assertIncomplete(t, err)
+	})
+
+	t.Run("same file cycle", func(t *testing.T) {
+		root := t.TempDir()
+		primary := writeProjectCompose(t, root, "compose.yaml", `
+services:
+  first:
+    extends: second
+  second:
+    extends: first
+`)
+		_, err := composeparser.ParseProject(context.Background(), composeparser.ProjectInput{
+			Primary: primary, Root: root,
+		})
+		assertIncomplete(t, err)
+	})
+
+	t.Run("external cycle", func(t *testing.T) {
+		root := t.TempDir()
+		primary := writeProjectCompose(t, root, "compose.yaml", `
+services:
+  web:
+    extends:
+      file: first.yaml
+      service: first
+`)
+		writeProjectCompose(t, root, "first.yaml", `
+services:
+  first:
+    extends:
+      file: second.yaml
+      service: second
+`)
+		writeProjectCompose(t, root, "second.yaml", `
+services:
+  second:
+    extends:
+      file: first.yaml
+      service: first
+`)
 		_, err := composeparser.ParseProject(context.Background(), composeparser.ProjectInput{
 			Primary: primary, Root: root,
 		})
