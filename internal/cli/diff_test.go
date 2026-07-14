@@ -207,6 +207,7 @@ func TestRunDiffRejectsInvalidArguments(t *testing.T) {
 	tests := [][]string{
 		{"diff"},
 		{"diff", "--base", "a", "--head", "b", "--format", "yaml"},
+		{"diff", "--base", "a", "--head", "b", "--base-override"},
 		{"diff", "--base", "a", "--head", "b", "extra"},
 	}
 	for _, args := range tests {
@@ -227,9 +228,124 @@ func TestRunHelpMentionsDiff(t *testing.T) {
 
 	code := cli.Run([]string{"help"}, &stdout, &stderr)
 
-	if code != 0 || !strings.Contains(stdout.String(), "exposuremap diff") || !strings.Contains(stdout.String(), "--context PATH") {
+	for _, want := range []string{
+		"exposuremap diff", "--base-root PATH", "--head-root PATH",
+		"--base-override PATH ...", "--head-override PATH ...", "--context PATH",
+	} {
+		if code != 0 || !strings.Contains(stdout.String(), want) {
+			t.Fatalf("code = %d, stdout missing %q: %q, stderr = %q", code, want, stdout.String(), stderr.String())
+		}
+	}
+}
+
+func TestRunDiffUsesIndependentRootsAndOrderedOverrides(t *testing.T) {
+	directory := t.TempDir()
+	baseRoot := filepath.Join(directory, "base")
+	headRoot := filepath.Join(directory, "head")
+	base := writeCLIProjectFile(t, baseRoot, "app/compose.yaml", "services:\n  web:\n    image: nginx\n")
+	baseOverride := writeCLIProjectFile(t, baseRoot, "overrides/base.yaml", "services:\n  web:\n    image: nginx:base\n")
+	head := writeCLIProjectFile(t, headRoot, "app/compose.yaml", "services:\n  web:\n    image: nginx\n")
+	headFirst := writeCLIProjectFile(t, headRoot, "overrides/first.yaml", `
+services:
+  web:
+    image: nginx:first
+    ports:
+      - 8080:80
+`)
+	headSecond := writeCLIProjectFile(t, headRoot, "overrides/second.yaml", `
+services:
+  web:
+    image: nginx:second
+    ports: !override
+      - 9090:90
+`)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := cli.Run([]string{
+		"diff",
+		"--base", base, "--base-root", baseRoot, "--base-override", baseOverride,
+		"--head", head, "--head-root", headRoot,
+		"--head-override", headFirst, "--head-override", headSecond,
+	}, &stdout, &stderr)
+
+	if code != 0 || stderr.Len() != 0 {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}
+	for _, want := range []string{
+		`"status": "warn"`, `"rule_id": "EM-COMPOSE-001"`, `"evidence": "*:9090-\u003e90/tcp"`,
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout missing %q: %s", want, stdout.String())
+		}
+	}
+}
+
+func TestRunDiffAppliesContextInsideIncludes(t *testing.T) {
+	directory := t.TempDir()
+	baseRoot := filepath.Join(directory, "base")
+	headRoot := filepath.Join(directory, "head")
+	base := writeCLIProjectFile(t, baseRoot, "compose.yaml", "include:\n  - child.yaml\n")
+	writeCLIProjectFile(t, baseRoot, "child.yaml", "services:\n  web:\n    image: nginx\n")
+	head := writeCLIProjectFile(t, headRoot, "compose.yaml", "include:\n  - child.yaml\n")
+	writeCLIProjectFile(t, headRoot, "child.yaml", `
+services:
+  web:
+    image: nginx
+    ports:
+      - ${WEB_PORT}:80
+`)
+	contextPath := writeCLIProjectFile(t, directory, "context.yml", `
+schema_version: 1
+variables:
+  head:
+    WEB_PORT: "8080"
+`)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := cli.Run([]string{
+		"diff", "--base", base, "--base-root", baseRoot,
+		"--head", head, "--head-root", headRoot, "--context", contextPath,
+	}, &stdout, &stderr)
+
+	if code != 0 || !strings.Contains(stdout.String(), `"rule_id": "EM-COMPOSE-001"`) || stderr.Len() != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunDiffReportsUnsafeRootAsSanitizedIncomplete(t *testing.T) {
+	directory := t.TempDir()
+	root := filepath.Join(directory, "root")
+	base := writeCLIProjectFile(t, root, "compose.yaml", "include:\n  - ../DO_NOT_PRINT.yaml\n")
+	head := writeCLIProjectFile(t, root, "head.yaml", "services: {}\n")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := cli.Run([]string{
+		"diff", "--base", base, "--base-root", root, "--head", head, "--head-root", root,
+	}, &stdout, &stderr)
+
+	if code != 0 || !strings.Contains(stdout.String(), `"status": "incomplete"`) || stderr.Len() != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+	}
+	for _, forbidden := range []string{directory, "DO_NOT_PRINT", "exposuremap-compose-"} {
+		if strings.Contains(stdout.String(), forbidden) {
+			t.Fatalf("stdout leaks %q: %s", forbidden, stdout.String())
+		}
+	}
+}
+
+func writeCLIProjectFile(t *testing.T, root, relativePath, contents string) string {
+	t.Helper()
+	path := filepath.Join(root, filepath.FromSlash(relativePath))
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	return path
 }
 
 func writeCLICompose(t *testing.T, directory, name, contents string) string {

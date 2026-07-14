@@ -129,6 +129,30 @@ func TestVerifyMaterializedAcceptsValidCacheAndRejectsTampering(t *testing.T) {
 	}
 }
 
+func TestVerifyMaterializedRejectsUnlistedFiles(t *testing.T) {
+	corpus := materializeCorpus([]string{"compose.yaml"})
+	client := &fakeContentClient{files: map[string]githubapi.File{}}
+	for _, sha := range []string{strings.Repeat("a", 40), strings.Repeat("b", 40)} {
+		client.files[sha+"|compose.yaml"] = githubapi.File{
+			BlobSHA: "blob-" + sha[:1],
+			Content: []byte("include:\n  - unlisted.yaml\n# " + sha),
+		}
+	}
+	output := filepath.Join(t.TempDir(), "cache")
+	if _, err := benchmark.Materialize(context.Background(), client, corpus, output); err != nil {
+		t.Fatalf("Materialize() error = %v", err)
+	}
+	extra := filepath.Join(output, corpus.Cases[0].ID, "base", "unlisted.yaml")
+	if err := os.WriteFile(extra, []byte("services: {}\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	if _, err := benchmark.VerifyMaterialized(output, corpus.Cases[0]); err == nil ||
+		!strings.Contains(err.Error(), "unexpected cache entry") {
+		t.Fatalf("VerifyMaterialized() error = %v, want unexpected-entry failure", err)
+	}
+}
+
 func TestMaterializeRejectsUnsafeAndExcessiveCasesBeforeFetching(t *testing.T) {
 	tests := map[string]benchmark.Corpus{
 		"unsafe case id": materializeCorpusWithID("../escape", []string{"compose.yaml"}),

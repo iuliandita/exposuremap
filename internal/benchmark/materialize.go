@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -320,6 +321,9 @@ func verifyManifest(caseDirectory string, item Case, manifest MaterializedManife
 	}
 	paths := slices.Clone(item.Paths)
 	slices.Sort(paths)
+	if err := verifyMaterializedTree(caseDirectory, paths); err != nil {
+		return err
+	}
 	var total int64
 	for _, revision := range []struct {
 		label string
@@ -350,6 +354,47 @@ func verifyManifest(caseDirectory string, item Case, manifest MaterializedManife
 		return fmt.Errorf("cached case exceeds %d bytes", maxMaterializedBytes)
 	}
 	return nil
+}
+
+func verifyMaterializedTree(caseDirectory string, paths []string) error {
+	expectedFiles := map[string]struct{}{"manifest.json": {}}
+	expectedDirectories := map[string]struct{}{}
+	for _, revision := range []string{"base", "head"} {
+		expectedDirectories[revision] = struct{}{}
+		for _, path := range paths {
+			relativePath := filepath.Join(revision, filepath.FromSlash(path))
+			expectedFiles[relativePath] = struct{}{}
+			for directory := filepath.Dir(relativePath); directory != "."; directory = filepath.Dir(directory) {
+				expectedDirectories[directory] = struct{}{}
+			}
+		}
+	}
+
+	return filepath.WalkDir(caseDirectory, func(path string, entry fs.DirEntry, walkError error) error {
+		if walkError != nil {
+			return fmt.Errorf("inspect cache tree: %w", walkError)
+		}
+		relativePath, err := filepath.Rel(caseDirectory, path)
+		if err != nil {
+			return fmt.Errorf("inspect cache tree")
+		}
+		if relativePath == "." {
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("unexpected cache entry")
+		}
+		if entry.IsDir() {
+			if _, exists := expectedDirectories[relativePath]; !exists {
+				return fmt.Errorf("unexpected cache entry")
+			}
+			return nil
+		}
+		if _, exists := expectedFiles[relativePath]; !exists {
+			return fmt.Errorf("unexpected cache entry")
+		}
+		return nil
+	})
 }
 
 func ensureCacheDirectory(output string) error {

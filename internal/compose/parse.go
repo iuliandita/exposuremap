@@ -5,9 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -17,8 +14,6 @@ import (
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/iuliandita/exposuremap/internal/graph"
 )
-
-const maxComposeBytes = 1 << 20
 
 var boundaryFields = []string{"image", "ports", "networks", "volumes", "privileged", "network_mode"}
 
@@ -31,42 +26,18 @@ func (err *IncompleteError) Error() string {
 	return err.Reason
 }
 
-// ParseOptions contains explicit inputs used while normalizing one revision.
-type ParseOptions struct {
-	Variables map[string]string
-}
-
-// ParseFile safely loads one regular Compose file and normalizes boundary facts.
-func ParseFile(ctx context.Context, filePath string) (graph.Revision, error) {
-	return ParseFileWithOptions(ctx, filePath, ParseOptions{})
-}
-
-// ParseFileWithOptions safely loads one regular Compose file with explicit variables.
-func ParseFileWithOptions(ctx context.Context, filePath string, parseOptions ParseOptions) (graph.Revision, error) {
-	variables := make(map[string]string, len(parseOptions.Variables))
-	for name, value := range parseOptions.Variables {
-		variables[name] = value
-	}
+func parseProjectDetails(
+	ctx context.Context,
+	details types.ConfigDetails,
+	variables map[string]string,
+	content []byte,
+) (graph.Revision, error) {
 	lookup := func(name string) (string, bool) {
 		value, exists := variables[name]
 		return value, exists
 	}
-	content, err := readRegularFile(filePath)
-	if err != nil {
-		return graph.Revision{}, incomplete("read compose file: %s", safeFileError(err))
-	}
-	details := types.ConfigDetails{
-		WorkingDir: filepath.Dir(filePath),
-		ConfigFiles: []types.ConfigFile{{
-			Filename: filepath.Base(filePath),
-			Content:  content,
-		}},
-		Environment: types.Mapping{},
-	}
 	options := func(options *loader.Options) {
 		options.ResolvePaths = false
-		options.SkipInclude = true
-		options.SkipExtends = true
 		options.SkipResolveEnvironment = true
 		options.SetProjectName("exposuremap", true)
 	}
@@ -111,7 +82,12 @@ func ParseFileWithOptions(ctx context.Context, filePath string, parseOptions Par
 			return value, exists
 		}
 	}
-	project, err := loader.LoadWithContext(ctx, details, normalizedOptions)
+	normalizedDetails := details
+	normalizedDetails.Environment = make(types.Mapping, len(symbolicValues))
+	for name, value := range symbolicValues {
+		normalizedDetails.Environment[name] = value
+	}
+	project, err := loader.LoadWithContext(ctx, normalizedDetails, normalizedOptions)
 	if err != nil {
 		return graph.Revision{}, incomplete("parse compose file: invalid or unresolved Compose model")
 	}
@@ -156,47 +132,7 @@ func ParseFileWithOptions(ctx context.Context, filePath string, parseOptions Par
 	return graph.Normalize(revision), nil
 }
 
-func readRegularFile(filePath string) (returnContent []byte, returnError error) {
-	info, err := os.Lstat(filePath)
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("input is not a regular file")
-	}
-	if info.Size() > maxComposeBytes {
-		return nil, fmt.Errorf("input exceeds %d bytes", maxComposeBytes)
-	}
-	file, err := os.Open(filePath)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if closeError := file.Close(); returnError == nil && closeError != nil {
-			returnError = closeError
-		}
-	}()
-	openedInfo, err := file.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
-		return nil, fmt.Errorf("input changed while opening")
-	}
-	content, err := io.ReadAll(io.LimitReader(file, maxComposeBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(content) > maxComposeBytes {
-		return nil, fmt.Errorf("input exceeds %d bytes", maxComposeBytes)
-	}
-	return content, nil
-}
-
 func unsupportedConstruct(model map[string]any) string {
-	if _, exists := model["include"]; exists {
-		return "include"
-	}
 	services, _ := model["services"].(map[string]any)
 	serviceNames := make([]string, 0, len(services))
 	for serviceName := range services {
@@ -205,7 +141,7 @@ func unsupportedConstruct(model map[string]any) string {
 	slices.Sort(serviceNames)
 	for _, serviceName := range serviceNames {
 		service, _ := services[serviceName].(map[string]any)
-		for _, field := range []string{"extends", "label_file"} {
+		for _, field := range []string{"label_file"} {
 			if _, exists := service[field]; exists {
 				return fmt.Sprintf("services.%s.%s", serviceName, field)
 			}
@@ -677,12 +613,4 @@ func nestedInterpolation(value string) bool {
 
 func incomplete(format string, arguments ...any) *IncompleteError {
 	return &IncompleteError{Reason: fmt.Sprintf(format, arguments...)}
-}
-
-func safeFileError(err error) string {
-	var pathError *os.PathError
-	if errors.As(err, &pathError) {
-		return pathError.Op + ": " + pathError.Err.Error()
-	}
-	return err.Error()
 }
