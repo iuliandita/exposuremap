@@ -2,7 +2,7 @@
 
 ExposureMap compares two revisions of container configuration and explains changes to reachability and compromise blast radius.
 
-The project is an early prototype. It has a warning-only, single-file Docker Compose analyzer plus a public corpus and independent-review workflow used to measure completeness, precision, and report usefulness.
+The project is an early prototype. It has a warning-only, bounded Docker Compose project analyzer plus a public corpus and independent-review workflow used to measure completeness, precision, and report usefulness.
 
 ## The review question
 
@@ -21,7 +21,7 @@ ExposureMap will not call a service Internet-accessible unless explicit project 
 
 ## Current analyzer slice
 
-The current CLI accepts one regular Compose file for each revision. It normalizes services, resolved image references, published ports, Compose networks, bind mounts, privileged mode, and host network mode with the reference `compose-go` loader. Exact plain `${NAME}` expressions in the published-port position are preserved as symbolic bindings.
+The current CLI accepts one primary Compose file plus explicit ordered overrides for each revision. It supports bounded local includes and service inheritance, then normalizes services, resolved image references, published ports, Compose networks, bind mounts, privileged mode, and host network mode with the reference `compose-go` loader. Exact plain `${NAME}` expressions in the published-port position are preserved as symbolic bindings.
 
 It emits two informational peer-path change kinds:
 
@@ -49,6 +49,21 @@ go run ./cmd/exposuremap diff \
   --format json
 ```
 
+Repeat `--base-override` or `--head-override` in Compose merge order. Each revision defaults its import root to the primary file's directory. Use an explicit root when approved local imports live in a parent directory:
+
+```sh
+go run ./cmd/exposuremap diff \
+  --base revisions/base/compose.yaml \
+  --base-root revisions/base \
+  --base-override revisions/base/compose.prod.yaml \
+  --head revisions/head/compose.yaml \
+  --head-root revisions/head \
+  --head-override revisions/head/compose.prod.yaml \
+  --format json
+```
+
+Overrides are never discovered automatically. Supported imports are short or long local `include` declarations, ordered include path lists, relative `project_directory`, and recursive same-file or local-file `extends`.
+
 When a graph-relevant Compose variable has a known nonsecret value, pass one explicit context file:
 
 ```yaml
@@ -75,7 +90,9 @@ go run ./cmd/exposuremap diff \
 
 Use `--format markdown` for a review-oriented report. Complete analyses are deliberately reported as `warn`, even with no findings. Unsupported or unresolved inputs are `incomplete`. Both exit `0`; this prototype cannot become an accidental CI gate. Invalid invocations and output failures exit `2`.
 
-Compose overrides, includes, extends, label files, Dockerfiles, proxy configuration, policy, nginx, Kubernetes, Terraform, live Docker state, firewalls, DNS, Nginx Proxy Manager, and Apache are outside the current analyzer slice. The adapter analyzes the default Compose projection with no profiles enabled, so profile-gated services are excluded. It does not infer profile settings or read process variables or `.env`; interpolation uses only inline defaults and values from an explicitly selected context file. Service-level `env_file` declarations are accepted as container-environment metadata, but the referenced files are never read and their values do not affect the graph. The adapter rejects other external Compose inputs instead of reading them implicitly.
+Each revision may read at most 64 Compose files, 1 MiB per file, 8 MiB total, and 16 recursive import edges. Imports must be static relative regular files beneath the selected root. Absolute paths, remote references, root escapes, interpolated import paths, symlinks, non-regular files, and include `env_file` are incomplete. The isolated import view does not expose ambient `.env` files.
+
+Label files, Dockerfiles, proxy configuration, policy, nginx, Kubernetes, Terraform, live Docker state, firewalls, DNS, Nginx Proxy Manager, and Apache remain outside the current analyzer slice. The adapter analyzes the default Compose projection with no profiles enabled, so profile-gated services are excluded. It does not infer profile settings or read process variables; interpolation uses only inline defaults and values from an explicitly selected context file. Service-level `env_file` declarations are accepted as container-environment metadata, but the referenced files are never read and their values do not affect the graph.
 
 ## What exists now
 
@@ -106,7 +123,7 @@ See [benchmark/README.md](benchmark/README.md) for the corpus and reviewer workf
 
 ## Safety boundary
 
-The analyzer will never execute repository code, builds, hooks, containers, Docker, or proxy binaries. It will be deterministic and will not use an LLM for analysis or verdicts.
+The analyzer will never execute repository code, builds, hooks, containers, Docker, or proxy binaries. Analysis does not require network access, telemetry, or an LLM, and identical approved inputs remain deterministic.
 
 A report with no findings means only "no warning-level boundary widening was detected within observed inputs." Informational changes may still be present, and the report is not proof that a deployment is secure. Runtime state, firewall rules, DNS, application authentication, vulnerabilities, and generated configuration may remain unobserved.
 
