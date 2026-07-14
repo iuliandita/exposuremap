@@ -38,7 +38,6 @@ func parseProjectDetails(
 	}
 	options := func(options *loader.Options) {
 		options.ResolvePaths = false
-		options.SkipInclude = true
 		options.SkipExtends = true
 		options.SkipResolveEnvironment = true
 		options.SetProjectName("exposuremap", true)
@@ -84,7 +83,12 @@ func parseProjectDetails(
 			return value, exists
 		}
 	}
-	project, err := loader.LoadWithContext(ctx, details, normalizedOptions)
+	normalizedDetails := details
+	normalizedDetails.Environment = make(types.Mapping, len(symbolicValues))
+	for name, value := range symbolicValues {
+		normalizedDetails.Environment[name] = value
+	}
+	project, err := loader.LoadWithContext(ctx, normalizedDetails, normalizedOptions)
 	if err != nil {
 		return graph.Revision{}, incomplete("parse compose file: invalid or unresolved Compose model")
 	}
@@ -130,9 +134,6 @@ func parseProjectDetails(
 }
 
 func unsupportedConstruct(model map[string]any) string {
-	if _, exists := model["include"]; exists {
-		return "include"
-	}
 	services, _ := model["services"].(map[string]any)
 	serviceNames := make([]string, 0, len(services))
 	for serviceName := range services {

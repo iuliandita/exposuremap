@@ -91,6 +91,9 @@ func ParseProject(ctx context.Context, input ProjectInput) (graph.Revision, erro
 			Content:  content,
 		})
 	}
+	if err := collectIncludes(ctx, snapshot, relativePaths[0], relativePaths); err != nil {
+		return graph.Revision{}, incomplete("prepare Compose project: invalid Compose import")
+	}
 	details := types.ConfigDetails{
 		WorkingDir:  filepath.Dir(snapshot.path(relativePaths[0])),
 		ConfigFiles: configFiles,

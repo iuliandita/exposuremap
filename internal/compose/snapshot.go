@@ -191,6 +191,16 @@ func (snapshot *projectSnapshot) path(relativePath string) string {
 	return filepath.Join(snapshot.directory, relativePath)
 }
 
+func (snapshot *projectSnapshot) ensureDirectory(relativePath string) error {
+	if relativePath == "." {
+		return nil
+	}
+	if err := snapshot.destination.MkdirAll(relativePath, 0o700); err != nil {
+		return fmt.Errorf("create project snapshot directory")
+	}
+	return nil
+}
+
 func (snapshot *projectSnapshot) allContent() []byte {
 	paths := make([]string, 0, len(snapshot.files))
 	for path := range snapshot.files {
