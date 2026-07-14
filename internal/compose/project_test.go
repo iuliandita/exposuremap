@@ -710,6 +710,277 @@ services:
 	})
 }
 
+func TestParseProjectLimitsFilesAndBytes(t *testing.T) {
+	t.Run("64 files", func(t *testing.T) {
+		root := t.TempDir()
+		paths := make([]string, 63)
+		for index := range paths {
+			paths[index] = fmt.Sprintf("files/%02d.yaml", index)
+			writeProjectCompose(t, root, paths[index], "services: {}\n")
+		}
+		primary := writeProjectCompose(t, root, "compose.yaml", includePathList(paths))
+
+		revision, err := composeparser.ParseProject(context.Background(), composeparser.ProjectInput{
+			Primary: primary, Root: root,
+		})
+		if err != nil || !revision.Complete {
+			t.Fatalf("64-file ParseProject() revision = %#v, error = %v", revision, err)
+		}
+	})
+
+	t.Run("65 files", func(t *testing.T) {
+		root := t.TempDir()
+		paths := make([]string, 64)
+		for index := range paths {
+			paths[index] = fmt.Sprintf("files/%02d.yaml", index)
+			writeProjectCompose(t, root, paths[index], "services: {}\n")
+		}
+		primary := writeProjectCompose(t, root, "compose.yaml", includePathList(paths))
+		_, err := composeparser.ParseProject(context.Background(), composeparser.ProjectInput{
+			Primary: primary, Root: root,
+		})
+		assertIncomplete(t, err)
+	})
+
+	t.Run("one MiB", func(t *testing.T) {
+		root := t.TempDir()
+		primary := writeProjectCompose(t, root, "compose.yaml", paddedCompose("services: {}\n", 1<<20))
+		revision, err := composeparser.ParseProject(context.Background(), composeparser.ProjectInput{
+			Primary: primary, Root: root,
+		})
+		if err != nil || !revision.Complete {
+			t.Fatalf("1-MiB ParseProject() revision = %#v, error = %v", revision, err)
+		}
+
+		oversized := writeProjectCompose(t, root, "oversized.yaml", paddedCompose("services: {}\n", (1<<20)+1))
+		_, err = composeparser.ParseProject(context.Background(), composeparser.ProjectInput{
+			Primary: oversized, Root: root,
+		})
+		assertIncomplete(t, err)
+	})
+
+	t.Run("eight MiB total", func(t *testing.T) {
+		root := t.TempDir()
+		paths := make([]string, 7)
+		for index := range paths {
+			paths[index] = fmt.Sprintf("files/%02d.yaml", index)
+			writeProjectCompose(t, root, paths[index], paddedCompose("services: {}\n", 1<<20))
+		}
+		primary := writeProjectCompose(t, root, "compose.yaml", paddedCompose(includePathList(paths), 1<<20))
+		revision, err := composeparser.ParseProject(context.Background(), composeparser.ProjectInput{
+			Primary: primary, Root: root,
+		})
+		if err != nil || !revision.Complete {
+			t.Fatalf("8-MiB ParseProject() revision = %#v, error = %v", revision, err)
+		}
+
+		extra := writeProjectCompose(t, root, "files/extra.yaml", "#\n")
+		paths = append(paths, filepath.ToSlash(strings.TrimPrefix(extra, root+string(os.PathSeparator))))
+		overPrimary := writeProjectCompose(t, root, "over.yaml", paddedCompose(includePathList(paths), 1<<20))
+		_, err = composeparser.ParseProject(context.Background(), composeparser.ProjectInput{
+			Primary: overPrimary, Root: root,
+		})
+		assertIncomplete(t, err)
+	})
+}
+
+func TestParseProjectLimitsImportDepth(t *testing.T) {
+	tests := []struct {
+		name    string
+		write   func(*testing.T, string, int) string
+		edges   int
+		wantErr bool
+	}{
+		{name: "include 16", write: writeIncludeDepthProject, edges: 16},
+		{name: "include 17", write: writeIncludeDepthProject, edges: 17, wantErr: true},
+		{name: "extends 16", write: writeExtendsDepthProject, edges: 16},
+		{name: "extends 17", write: writeExtendsDepthProject, edges: 17, wantErr: true},
+		{name: "mixed 16", write: writeMixedDepthProject, edges: 16},
+		{name: "mixed 17", write: writeMixedDepthProject, edges: 17, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			primary := test.write(t, root, test.edges)
+			revision, err := composeparser.ParseProject(context.Background(), composeparser.ProjectInput{
+				Primary: primary, Root: root,
+			})
+			if test.wantErr {
+				assertIncomplete(t, err)
+				return
+			}
+			if err != nil || !revision.Complete {
+				t.Fatalf("ParseProject() revision = %#v, error = %v", revision, err)
+			}
+		})
+	}
+}
+
+func TestParseProjectIgnoresAmbientInputsInIncludes(t *testing.T) {
+	t.Setenv("IMAGE", "ambient.invalid/image")
+	root := t.TempDir()
+	primary := writeProjectCompose(t, root, "compose.yaml", "include:\n  - included/compose.yaml\n")
+	writeProjectCompose(t, root, "included/compose.yaml", `
+services:
+  web:
+    image: ${IMAGE}
+`)
+	writeProjectCompose(t, root, "included/.env", "IMAGE=dotenv.invalid/image\nDO_NOT_PRINT=1\n")
+
+	_, err := composeparser.ParseProject(context.Background(), composeparser.ProjectInput{
+		Primary: primary, Root: root,
+	})
+	var incomplete *composeparser.IncompleteError
+	if !errors.As(err, &incomplete) {
+		t.Fatalf("error = %v, want incomplete", err)
+	}
+	for _, forbidden := range []string{"ambient.invalid", "dotenv.invalid", "DO_NOT_PRINT", root} {
+		if strings.Contains(incomplete.Error(), forbidden) {
+			t.Fatalf("error leaks %q: %q", forbidden, incomplete.Error())
+		}
+	}
+}
+
+func TestParseProjectIgnoresImportedServiceEnvFile(t *testing.T) {
+	root := t.TempDir()
+	primary := writeProjectCompose(t, root, "compose.yaml", "include:\n  - included/compose.yaml\n")
+	writeProjectCompose(t, root, "included/compose.yaml", `
+services:
+  web:
+    image: nginx
+    env_file: missing.env
+    ports:
+      - 8080:80
+`)
+
+	revision, err := composeparser.ParseProject(context.Background(), composeparser.ProjectInput{
+		Primary: primary, Root: root,
+	})
+	if err != nil {
+		t.Fatalf("ParseProject() error = %v", err)
+	}
+	if got := serviceNamed(t, revision, "web").Bindings[0].Published; got != "8080" {
+		t.Fatalf("published = %q, want 8080", got)
+	}
+}
+
+func TestParseProjectNormalizesImportedPaths(t *testing.T) {
+	root := t.TempDir()
+	primary := writeProjectCompose(t, root, "compose.yaml", `
+include:
+  - included/compose.yaml
+services:
+  primary:
+    image: nginx
+    volumes:
+      - ./primary:/primary
+      - /srv/absolute:/absolute
+  external:
+    extends:
+      file: bases/base.yaml
+      service: base
+`)
+	override := writeProjectCompose(t, root, "overrides/compose.yaml", `
+services:
+  override:
+    image: nginx
+    volumes:
+      - ./override:/override
+`)
+	writeProjectCompose(t, root, "included/compose.yaml", `
+services:
+  included:
+    image: nginx
+    volumes:
+      - ./data:/data
+`)
+	writeProjectCompose(t, root, "bases/base.yaml", `
+services:
+  base:
+    image: nginx
+    volumes:
+      - ./state:/state
+`)
+
+	revision, err := composeparser.ParseProject(context.Background(), composeparser.ProjectInput{
+		Primary: primary, Root: root, Overrides: []string{override},
+	})
+	if err != nil {
+		t.Fatalf("ParseProject() error = %v", err)
+	}
+	wants := map[string][]string{
+		"primary":  {"./primary", "/srv/absolute"},
+		"override": {"./override"},
+		"included": {"included/data"},
+		"external": {"bases/state"},
+	}
+	for serviceName, sources := range wants {
+		service := serviceNamed(t, revision, serviceName)
+		if len(service.Mounts) != len(sources) {
+			t.Fatalf("%s mounts = %#v, want sources %#v", serviceName, service.Mounts, sources)
+		}
+		for index, source := range sources {
+			got := filepath.ToSlash(service.Mounts[index].Source)
+			if got != source || strings.Contains(got, "exposuremap-compose-") || strings.Contains(got, root) {
+				t.Fatalf("%s mount %d source = %q, want %q", serviceName, index, got, source)
+			}
+		}
+	}
+}
+
+func includePathList(paths []string) string {
+	var result strings.Builder
+	result.WriteString("include:\n  - path:\n")
+	for _, path := range paths {
+		fmt.Fprintf(&result, "      - %s\n", filepath.ToSlash(path))
+	}
+	result.WriteString("services: {}\n")
+	return result.String()
+}
+
+func paddedCompose(contents string, size int) string {
+	padding := size - len(contents) - len("#\n")
+	if padding < 0 {
+		panic("compose content exceeds requested size")
+	}
+	return contents + "#" + strings.Repeat("x", padding) + "\n"
+}
+
+func writeIncludeDepthProject(t *testing.T, root string, edges int) string {
+	for level := range edges + 1 {
+		contents := "services: {}\n"
+		if level < edges {
+			contents = fmt.Sprintf("include:\n  - level-%02d.yaml\nservices: {}\n", level+1)
+		}
+		writeProjectCompose(t, root, fmt.Sprintf("level-%02d.yaml", level), contents)
+	}
+	return filepath.Join(root, "level-00.yaml")
+}
+
+func writeExtendsDepthProject(t *testing.T, root string, edges int) string {
+	return writeProjectCompose(t, root, "compose.yaml", extendsChain(edges))
+}
+
+func writeMixedDepthProject(t *testing.T, root string, edges int) string {
+	primary := writeProjectCompose(t, root, "compose.yaml", "include:\n  - child.yaml\n")
+	writeProjectCompose(t, root, "child.yaml", extendsChain(edges-1))
+	return primary
+}
+
+func extendsChain(edges int) string {
+	var result strings.Builder
+	result.WriteString("services:\n")
+	for level := range edges + 1 {
+		fmt.Fprintf(&result, "  service_%02d:\n", level)
+		if level < edges {
+			fmt.Fprintf(&result, "    extends: service_%02d\n", level+1)
+		} else {
+			result.WriteString("    image: nginx\n")
+		}
+	}
+	return result.String()
+}
+
 func writeProjectCompose(t *testing.T, root, relativePath, contents string) string {
 	t.Helper()
 	path := filepath.Join(root, filepath.FromSlash(relativePath))
