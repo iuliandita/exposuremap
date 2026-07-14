@@ -1,6 +1,7 @@
 package compose
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -74,25 +75,9 @@ func (snapshot *projectSnapshot) capture(ctx context.Context, relativePath strin
 	if len(snapshot.files) >= maxComposeFiles {
 		return nil, fmt.Errorf("compose file limit exceeded")
 	}
-	info, err := snapshot.source.Lstat(relativePath)
-	if err != nil || !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("compose input is not a regular file")
-	}
-	if info.Size() > maxComposeBytes {
-		return nil, fmt.Errorf("compose file limit exceeded")
-	}
-	file, err := snapshot.source.Open(relativePath)
+	content, err := readRootedRegularFile(ctx, snapshot.source, relativePath)
 	if err != nil {
-		return nil, fmt.Errorf("open compose input")
-	}
-	defer file.Close()
-	openedInfo, err := file.Stat()
-	if err != nil || !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
-		return nil, fmt.Errorf("compose input changed while opening")
-	}
-	content, err := io.ReadAll(io.LimitReader(file, maxComposeBytes+1))
-	if err != nil {
-		return nil, fmt.Errorf("read compose input")
+		return nil, err
 	}
 	if len(content) > maxComposeBytes || snapshot.totalBytes+len(content) > maxComposeTotalBytes {
 		return nil, fmt.Errorf("compose file limit exceeded")
@@ -112,6 +97,94 @@ func (snapshot *projectSnapshot) capture(ctx context.Context, relativePath strin
 	snapshot.files[relativePath] = content
 	snapshot.totalBytes += len(content)
 	return content, nil
+}
+
+func readRootedRegularFile(ctx context.Context, root *os.Root, relativePath string) ([]byte, error) {
+	components := strings.Split(relativePath, string(os.PathSeparator))
+	if len(components) == 0 {
+		return nil, fmt.Errorf("invalid compose input")
+	}
+	current := root
+	owned := false
+	defer func() {
+		if owned {
+			_ = current.Close()
+		}
+	}()
+
+	for _, component := range components[:len(components)-1] {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		info, err := current.Lstat(component)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return nil, fmt.Errorf("unsafe compose input path")
+		}
+		next, err := current.OpenRoot(component)
+		if err != nil {
+			return nil, fmt.Errorf("open compose input directory")
+		}
+		openedInfo, err := next.Lstat(".")
+		if err != nil || !os.SameFile(info, openedInfo) {
+			_ = next.Close()
+			return nil, fmt.Errorf("compose input directory changed while opening")
+		}
+		if owned {
+			if err := current.Close(); err != nil {
+				_ = next.Close()
+				return nil, fmt.Errorf("close compose input directory")
+			}
+		}
+		current = next
+		owned = true
+	}
+
+	name := components[len(components)-1]
+	info, err := current.Lstat(name)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("compose input is not a regular file")
+	}
+	if info.Size() > maxComposeBytes {
+		return nil, fmt.Errorf("compose file limit exceeded")
+	}
+	file, err := current.Open(name)
+	if err != nil {
+		return nil, fmt.Errorf("open compose input")
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil || !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
+		return nil, fmt.Errorf("compose input changed while opening")
+	}
+
+	var content bytes.Buffer
+	reader := io.LimitReader(file, maxComposeBytes+1)
+	buffer := make([]byte, 32<<10)
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		count, readError := reader.Read(buffer)
+		if count > 0 {
+			_, _ = content.Write(buffer[:count])
+		}
+		if readError == io.EOF {
+			break
+		}
+		if readError != nil {
+			return nil, fmt.Errorf("read compose input")
+		}
+	}
+	if content.Len() > maxComposeBytes {
+		return nil, fmt.Errorf("compose file limit exceeded")
+	}
+	afterInfo, err := file.Stat()
+	if err != nil || !os.SameFile(openedInfo, afterInfo) ||
+		openedInfo.Size() != afterInfo.Size() || openedInfo.Mode() != afterInfo.Mode() ||
+		!openedInfo.ModTime().Equal(afterInfo.ModTime()) {
+		return nil, fmt.Errorf("compose input changed while reading")
+	}
+	return content.Bytes(), nil
 }
 
 func (snapshot *projectSnapshot) path(relativePath string) string {

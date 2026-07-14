@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	composeparser "github.com/iuliandita/exposuremap/internal/compose"
@@ -148,5 +149,72 @@ services:
 	}
 	if got := serviceNamed(t, revision, "web").Image; got != "example/web:override" {
 		t.Fatalf("image = %q, want sibling override image", got)
+	}
+}
+
+func TestParseProjectRejectsUnsafeEntryPaths(t *testing.T) {
+	root := t.TempDir()
+	regular := writeCompose(t, root, "regular.yaml", "services: {}\n")
+	symlink := filepath.Join(root, "link.yaml")
+	if err := os.Symlink(regular, symlink); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+	realDirectory := filepath.Join(root, "real")
+	if err := os.Mkdir(realDirectory, 0o700); err != nil {
+		t.Fatalf("Mkdir() error = %v", err)
+	}
+	writeCompose(t, realDirectory, "compose.yaml", "services: {}\n")
+	ancestorSymlink := filepath.Join(root, "linked")
+	if err := os.Symlink("real", ancestorSymlink); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+	linkedCompose := filepath.Join(ancestorSymlink, "compose.yaml")
+	reserved := writeCompose(t, root, ".env", "services: {}\n")
+
+	tests := map[string]composeparser.ProjectInput{
+		"directory":        {Primary: root, Root: root},
+		"final symlink":    {Primary: symlink, Root: root},
+		"ancestor symlink": {Primary: linkedCompose, Root: root},
+		"reserved env":     {Primary: reserved, Root: root},
+		"missing":          {Primary: filepath.Join(root, "missing.yaml"), Root: root},
+	}
+	for name, input := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := composeparser.ParseProject(context.Background(), input)
+			var incomplete *composeparser.IncompleteError
+			if !errors.As(err, &incomplete) {
+				t.Fatalf("error = %v, want incomplete", err)
+			}
+		})
+	}
+
+	rootSymlink := filepath.Join(t.TempDir(), "root-link")
+	if err := os.Symlink(root, rootSymlink); err != nil {
+		t.Fatalf("root Symlink() error = %v", err)
+	}
+	_, err := composeparser.ParseProject(context.Background(), composeparser.ProjectInput{
+		Primary: filepath.Join(rootSymlink, "regular.yaml"), Root: rootSymlink,
+	})
+	var incomplete *composeparser.IncompleteError
+	if !errors.As(err, &incomplete) {
+		t.Fatalf("root-symlink error = %v, want incomplete", err)
+	}
+}
+
+func TestParseProjectRejectsCanceledCaptureWithoutLeakingInput(t *testing.T) {
+	root := t.TempDir()
+	path := writeCompose(t, root, "DO_NOT_PRINT.yaml", "services: [DO_NOT_PRINT\n")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := composeparser.ParseProject(ctx, composeparser.ProjectInput{Primary: path, Root: root})
+	var incomplete *composeparser.IncompleteError
+	if !errors.As(err, &incomplete) {
+		t.Fatalf("error = %v, want incomplete", err)
+	}
+	for _, forbidden := range []string{root, path, "DO_NOT_PRINT", "exposuremap-compose-"} {
+		if strings.Contains(incomplete.Error(), forbidden) {
+			t.Fatalf("error leaks %q: %q", forbidden, incomplete.Error())
+		}
 	}
 }
