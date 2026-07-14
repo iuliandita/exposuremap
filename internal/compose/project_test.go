@@ -419,6 +419,26 @@ func TestParseProjectRejectsIncludeSymlinksAndCycles(t *testing.T) {
 		assertIncomplete(t, err)
 	})
 
+	t.Run("project directory symlink", func(t *testing.T) {
+		root := t.TempDir()
+		primary := writeProjectCompose(t, root, "compose.yaml", `
+include:
+  - path: child.yaml
+    project_directory: linked
+`)
+		writeProjectCompose(t, root, "child.yaml", "services: {}\n")
+		if err := os.Mkdir(filepath.Join(root, "real"), 0o700); err != nil {
+			t.Fatalf("Mkdir() error = %v", err)
+		}
+		if err := os.Symlink("real", filepath.Join(root, "linked")); err != nil {
+			t.Fatalf("Symlink() error = %v", err)
+		}
+		_, err := composeparser.ParseProject(context.Background(), composeparser.ProjectInput{
+			Primary: primary, Root: root,
+		})
+		assertIncomplete(t, err)
+	})
+
 	t.Run("cycle", func(t *testing.T) {
 		root := t.TempDir()
 		primary := writeProjectCompose(t, root, "compose.yaml", "include:\n  - child.yaml\n")

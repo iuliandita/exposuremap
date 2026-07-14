@@ -3,6 +3,7 @@ package compose
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -99,7 +100,11 @@ func (snapshot *projectSnapshot) capture(ctx context.Context, relativePath strin
 	return content, nil
 }
 
-func readRootedRegularFile(ctx context.Context, root *os.Root, relativePath string) ([]byte, error) {
+func readRootedRegularFile(
+	ctx context.Context,
+	root *os.Root,
+	relativePath string,
+) (returnContent []byte, returnError error) {
 	components := strings.Split(relativePath, string(os.PathSeparator))
 	if len(components) == 0 {
 		return nil, fmt.Errorf("invalid compose input")
@@ -108,7 +113,10 @@ func readRootedRegularFile(ctx context.Context, root *os.Root, relativePath stri
 	owned := false
 	defer func() {
 		if owned {
-			_ = current.Close()
+			if err := current.Close(); returnError == nil && err != nil {
+				returnContent = nil
+				returnError = fmt.Errorf("close compose input directory")
+			}
 		}
 	}()
 
@@ -151,7 +159,12 @@ func readRootedRegularFile(ctx context.Context, root *os.Root, relativePath stri
 	if err != nil {
 		return nil, fmt.Errorf("open compose input")
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); returnError == nil && err != nil {
+			returnContent = nil
+			returnError = fmt.Errorf("close compose input")
+		}
+	}()
 	openedInfo, err := file.Stat()
 	if err != nil || !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
 		return nil, fmt.Errorf("compose input changed while opening")
@@ -191,12 +204,63 @@ func (snapshot *projectSnapshot) path(relativePath string) string {
 	return filepath.Join(snapshot.directory, relativePath)
 }
 
-func (snapshot *projectSnapshot) ensureDirectory(relativePath string) error {
+func (snapshot *projectSnapshot) ensureDirectory(ctx context.Context, relativePath string) error {
 	if relativePath == "." {
 		return nil
 	}
+	if err := validateRootedDirectory(ctx, snapshot.source, relativePath); err != nil {
+		return err
+	}
 	if err := snapshot.destination.MkdirAll(relativePath, 0o700); err != nil {
 		return fmt.Errorf("create project snapshot directory")
+	}
+	return nil
+}
+
+func validateRootedDirectory(
+	ctx context.Context,
+	root *os.Root,
+	relativePath string,
+) (returnError error) {
+	components := strings.Split(relativePath, string(os.PathSeparator))
+	current := root
+	owned := false
+	defer func() {
+		if owned {
+			if err := current.Close(); returnError == nil && err != nil {
+				returnError = fmt.Errorf("close compose project directory")
+			}
+		}
+	}()
+
+	for _, component := range components {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		info, err := current.Lstat(component)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("unsafe compose project directory")
+		}
+		next, err := current.OpenRoot(component)
+		if err != nil {
+			return fmt.Errorf("open compose project directory")
+		}
+		openedInfo, err := next.Lstat(".")
+		if err != nil || !os.SameFile(info, openedInfo) {
+			_ = next.Close()
+			return fmt.Errorf("compose project directory changed while opening")
+		}
+		if owned {
+			if err := current.Close(); err != nil {
+				_ = next.Close()
+				return fmt.Errorf("close compose project directory")
+			}
+		}
+		current = next
+		owned = true
 	}
 	return nil
 }

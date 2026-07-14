@@ -35,7 +35,7 @@ func ParseFileWithOptions(ctx context.Context, filePath string, options ParseOpt
 }
 
 // ParseProject safely loads an explicit primary file and ordered overrides.
-func ParseProject(ctx context.Context, input ProjectInput) (graph.Revision, error) {
+func ParseProject(ctx context.Context, input ProjectInput) (returnRevision graph.Revision, returnError error) {
 	variables := make(map[string]string, len(input.Variables))
 	for name, value := range input.Variables {
 		variables[name] = value
@@ -73,10 +73,10 @@ func ParseProject(ctx context.Context, input ProjectInput) (graph.Revision, erro
 	if err != nil {
 		return graph.Revision{}, incomplete("prepare Compose project: invalid project root")
 	}
-	closed := false
 	defer func() {
-		if !closed {
-			_ = snapshot.Close()
+		if cleanupError := snapshot.Close(); cleanupError != nil {
+			returnRevision = graph.Revision{}
+			returnError = incomplete("prepare Compose project: cleanup failed")
 		}
 	}()
 
@@ -100,13 +100,8 @@ func ParseProject(ctx context.Context, input ProjectInput) (graph.Revision, erro
 		Environment: types.Mapping{},
 	}
 	revision, parseError := parseProjectDetails(ctx, details, variables, snapshot.allContent())
-	cleanupError := snapshot.Close()
-	closed = true
 	if parseError != nil {
 		return graph.Revision{}, parseError
-	}
-	if cleanupError != nil {
-		return graph.Revision{}, incomplete("prepare Compose project: cleanup failed")
 	}
 	return revision, nil
 }

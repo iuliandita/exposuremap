@@ -109,7 +109,7 @@ func (collector *importCollector) collectFile(
 				if err != nil {
 					return err
 				}
-				if err := collector.snapshot.ensureDirectory(childWorkingDirectory); err != nil {
+				if err := collector.snapshot.ensureDirectory(ctx, childWorkingDirectory); err != nil {
 					return err
 				}
 			}
