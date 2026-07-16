@@ -31,7 +31,7 @@ func parseProjectDetails(
 	details types.ConfigDetails,
 	variables map[string]string,
 	content []byte,
-) (graph.Revision, error) {
+) (graph.Revision, *types.Project, map[string]bool, error) {
 	lookup := func(name string) (string, bool) {
 		value, exists := variables[name]
 		return value, exists
@@ -52,18 +52,20 @@ func parseProjectDetails(
 
 	model, err := loader.LoadModelWithContext(ctx, details, rawOptions)
 	if err != nil {
-		return graph.Revision{}, incomplete("parse compose file: invalid or unresolved Compose model")
+		return graph.Revision{}, nil, nil, incomplete("parse compose file: invalid or unresolved Compose model")
 	}
 	if reason := unsupportedConstruct(model); reason != "" {
-		return graph.Revision{}, incomplete("unsupported Compose construct: %s", reason)
+		return graph.Revision{}, nil, nil, incomplete("unsupported Compose construct: %s", reason)
 	}
+	skippedBuilds := map[string]bool{}
+	flagUnresolvedBuildInterpolation(model, lookup, skippedBuilds)
 	symbolicVariables, field := boundaryInterpolation(model, lookup)
 	if field != "" {
-		return graph.Revision{}, incomplete("parse compose file: unresolved boundary interpolation in %s", field)
+		return graph.Revision{}, nil, nil, incomplete("parse compose file: unresolved boundary interpolation in %s", field)
 	}
 	symbolicPorts, ok := allocateSymbolicPorts(model, content, symbolicVariables, lookup)
 	if !ok {
-		return graph.Revision{}, incomplete("parse compose file: too many symbolic published ports")
+		return graph.Revision{}, nil, nil, incomplete("parse compose file: too many symbolic published ports")
 	}
 	symbolicValues := make(map[string]string, len(variables)+len(symbolicPorts))
 	for name, value := range variables {
@@ -89,7 +91,7 @@ func parseProjectDetails(
 	}
 	project, err := loader.LoadWithContext(ctx, normalizedDetails, normalizedOptions)
 	if err != nil {
-		return graph.Revision{}, incomplete("parse compose file: invalid or unresolved Compose model")
+		return graph.Revision{}, nil, nil, incomplete("parse compose file: invalid or unresolved Compose model")
 	}
 
 	revision := graph.Revision{Complete: true, Services: make([]graph.Service, 0, len(project.Services))}
@@ -129,7 +131,7 @@ func parseProjectDetails(
 		}
 		revision.Services = append(revision.Services, normalized)
 	}
-	return graph.Normalize(revision), nil
+	return revision, project, skippedBuilds, nil
 }
 
 func unsupportedConstruct(model map[string]any) string {

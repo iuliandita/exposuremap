@@ -100,6 +100,34 @@ func (snapshot *projectSnapshot) capture(ctx context.Context, relativePath strin
 	return content, nil
 }
 
+// captureOptional reads an enrichment input that may be absent. Any failure
+// (missing, unsafe, irregular, or over budget) yields no content and no error,
+// because enrichment can only add facts and never make a revision incomplete.
+func (snapshot *projectSnapshot) captureOptional(ctx context.Context, relativePath string) ([]byte, bool) {
+	if content, exists := snapshot.files[relativePath]; exists {
+		return content, true
+	}
+	if ctx.Err() != nil {
+		return nil, false
+	}
+	if filepath.Base(relativePath) == ".env" {
+		return nil, false
+	}
+	if len(snapshot.files) >= maxComposeFiles {
+		return nil, false
+	}
+	content, err := readRootedRegularFile(ctx, snapshot.source, relativePath)
+	if err != nil {
+		return nil, false
+	}
+	if len(content) > maxComposeBytes || snapshot.totalBytes+len(content) > maxComposeTotalBytes {
+		return nil, false
+	}
+	snapshot.files[relativePath] = content
+	snapshot.totalBytes += len(content)
+	return content, true
+}
+
 func readRootedRegularFile(
 	ctx context.Context,
 	root *os.Root,

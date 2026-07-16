@@ -91,7 +91,12 @@ func ParseProject(ctx context.Context, input ProjectInput) (returnRevision graph
 			Content:  content,
 		})
 	}
-	if err := collectImports(ctx, snapshot, relativePaths[0], relativePaths); err != nil {
+	lookup := func(name string) (string, bool) {
+		value, exists := variables[name]
+		return value, exists
+	}
+	skippedBuilds, err := collectImports(ctx, snapshot, relativePaths[0], relativePaths, lookup)
+	if err != nil {
 		return graph.Revision{}, incomplete("prepare Compose project: invalid Compose import")
 	}
 	details := types.ConfigDetails{
@@ -99,11 +104,17 @@ func ParseProject(ctx context.Context, input ProjectInput) (returnRevision graph
 		ConfigFiles: configFiles,
 		Environment: types.Mapping{},
 	}
-	revision, parseError := parseProjectDetails(ctx, details, variables, snapshot.allContent())
+	revision, project, skippedEntries, parseError := parseProjectDetails(ctx, details, variables, snapshot.allContent())
 	if parseError != nil {
 		return graph.Revision{}, parseError
 	}
-	return revision, nil
+	for name := range skippedEntries {
+		skippedBuilds[name] = true
+	}
+	if err := applyBuildFacts(ctx, snapshot, details.WorkingDir, skippedBuilds, project, &revision); err != nil {
+		return graph.Revision{}, err
+	}
+	return graph.Normalize(revision), nil
 }
 
 func pathWithinRoot(rootPath, candidatePath string) (string, error) {

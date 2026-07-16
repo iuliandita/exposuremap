@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/compose-spec/compose-go/v2/loader"
+	"github.com/compose-spec/compose-go/v2/template"
 	"github.com/compose-spec/compose-go/v2/types"
 )
 
@@ -33,19 +34,28 @@ type configGroup struct {
 
 type importCollector struct {
 	snapshot *projectSnapshot
+	lookup   template.Mapping
+	skipped  map[string]bool
 }
 
+// collectImports captures include and extends inputs and reports the services
+// whose build declarations contain unresolved interpolation.
 func collectImports(
 	ctx context.Context,
 	snapshot *projectSnapshot,
 	primaryPath string,
 	entryPaths []string,
-) error {
-	collector := importCollector{snapshot: snapshot}
-	return collector.collectGroup(ctx, configGroup{
+	lookup template.Mapping,
+) (map[string]bool, error) {
+	collector := importCollector{snapshot: snapshot, lookup: lookup, skipped: map[string]bool{}}
+	err := collector.collectGroup(ctx, configGroup{
 		WorkingDirectory: filepath.Dir(primaryPath),
 		Paths:            entryPaths,
 	}, 0, map[string]bool{}, map[serviceReference]bool{})
+	if err != nil {
+		return nil, err
+	}
+	return collector.skipped, nil
 }
 
 func (collector *importCollector) collectGroup(
@@ -84,6 +94,7 @@ func (collector *importCollector) collectFile(
 	if err != nil {
 		return err
 	}
+	flagUnresolvedBuildInterpolation(model, collector.lookup, collector.skipped)
 	includes, err := parseIncludeSpecs(model["include"])
 	if err != nil {
 		return err
@@ -201,6 +212,7 @@ func (collector *importCollector) collectServiceExtends(
 	if err != nil {
 		return err
 	}
+	flagUnresolvedBuildInterpolation(externalModel, collector.lookup, collector.skipped)
 	return collector.collectServiceExtends(
 		ctx, resolved, filepath.Dir(resolved), externalModel, spec.Service, depth+1, active,
 	)
