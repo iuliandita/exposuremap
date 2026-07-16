@@ -32,6 +32,19 @@ var dataServiceImages = map[string]struct{}{
 	"pgadmin4":          {},
 }
 
+// recognizedDataServiceImage returns the image identity that classifies the
+// service as a data service, preferring the Compose image over the Dockerfile
+// base image, or "" when neither is recognized.
+func recognizedDataServiceImage(service graph.Service) string {
+	if dataServiceImage(service.Image) {
+		return service.Image
+	}
+	if dataServiceImage(service.BaseImage) {
+		return service.BaseImage
+	}
+	return ""
+}
+
 func dataServiceImage(image string) bool {
 	withoutDigest, _, _ := strings.Cut(image, "@")
 	basename := withoutDigest
@@ -51,15 +64,18 @@ func compareDataServicePaths(base, head graph.Revision) []report.Finding {
 			continue
 		}
 		for _, target := range head.Services {
-			if target.Name == source.Name || target.Reachability != graph.ReachabilityInternal ||
-				!dataServiceImage(target.Image) {
+			if target.Name == source.Name || target.Reachability != graph.ReachabilityInternal {
+				continue
+			}
+			image := recognizedDataServiceImage(target)
+			if image == "" {
 				continue
 			}
 			networks := sharedNetworks(source, target)
 			if len(networks) == 0 || equivalentBasePath(base, source, target, renamedServices) {
 				continue
 			}
-			evidence := source.Name + " -> " + networks[0] + " -> " + target.Name + " (" + target.Image + ")"
+			evidence := source.Name + " -> " + networks[0] + " -> " + target.Name + " (" + image + ")"
 			findings = append(findings, report.Finding{
 				RuleID:      ruleDataService,
 				Title:       "Host-exposed service gained a data-service path",
@@ -165,6 +181,7 @@ func compareServiceNames(left, right graph.Service) int {
 
 func sameBoundaryFacts(base, head graph.Service) bool {
 	return base.Image == head.Image &&
+		base.BaseImage == head.BaseImage &&
 		slices.Equal(base.Bindings, head.Bindings) &&
 		slices.Equal(base.Networks, head.Networks) &&
 		slices.Equal(base.Mounts, head.Mounts) &&

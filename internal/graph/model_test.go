@@ -12,9 +12,10 @@ func TestNormalizeSortsAndClassifiesServices(t *testing.T) {
 		Complete: true,
 		Services: []graph.Service{
 			{
-				Name:     "worker",
-				Image:    "registry.example/team/Postgres:16-alpine@sha256:abc",
-				Networks: []string{"queue", "backend", "queue"},
+				Name:      "worker",
+				Image:     "registry.example/team/Postgres:16-alpine@sha256:abc",
+				BaseImage: "postgres:16-alpine",
+				Networks:  []string{"queue", "backend", "queue"},
 				Mounts: []graph.Mount{
 					{Type: "bind", Source: "/var/run/docker.sock", Target: "/socket"},
 					{Type: "volume", Source: "data", Target: "/data"},
@@ -54,6 +55,9 @@ func TestNormalizeSortsAndClassifiesServices(t *testing.T) {
 	}
 	if got, want := revision.Services[3].Image, "registry.example/team/Postgres:16-alpine@sha256:abc"; got != want {
 		t.Fatalf("worker image = %q, want %q", got, want)
+	}
+	if got, want := revision.Services[3].BaseImage, "postgres:16-alpine"; got != want {
+		t.Fatalf("worker base image = %q, want %q", got, want)
 	}
 
 	bindings := revision.Services[2].Bindings

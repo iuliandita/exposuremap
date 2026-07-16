@@ -27,6 +27,7 @@ type Revision struct {
 type Service struct {
 	Name         string       `json:"name"`
 	Image        string       `json:"image,omitempty"`
+	BaseImage    string       `json:"base_image,omitempty"`
 	Bindings     []Binding    `json:"bindings,omitempty"`
 	Networks     []string     `json:"networks,omitempty"`
 	Mounts       []Mount      `json:"mounts,omitempty"`
@@ -62,6 +63,7 @@ func Normalize(revision Revision) Revision {
 		normalized := Service{
 			Name:        service.Name,
 			Image:       service.Image,
+			BaseImage:   service.BaseImage,
 			Bindings:    slices.Clone(service.Bindings),
 			Networks:    sortedUnique(service.Networks),
 			Mounts:      slices.Clone(service.Mounts),
