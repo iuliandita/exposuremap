@@ -3,8 +3,8 @@ module github.com/iuliandita/exposuremap
 go 1.26
 
 require (
-	github.com/compose-spec/compose-go/v2 v2.13.0
-	github.com/sirupsen/logrus v1.9.4
+	github.com/compose-spec/compose-go/v2 v2.16.2
+	github.com/sirupsen/logrus v1.10.1
 	go.yaml.in/yaml/v4 v4.0.0-rc.4
 )
 
